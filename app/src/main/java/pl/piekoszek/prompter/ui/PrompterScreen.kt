@@ -107,10 +107,10 @@ fun PrompterScreen(
     // visible area edge regardless of screen/orientation/font.
     val topPaddingDp = (lineMinHeight * 2).coerceAtLeast(16.dp)
 
-    LaunchedEffect(session.position, session.status) {
+    LaunchedEffect(session.position, session.previewPosition, session.status) {
         if (!touching && viewportPx > 0 && lines.isNotEmpty()) {
-            val targetLine = (session.position / WORDS_PER_LINE)
-                .coerceIn(0, lines.size - 1)
+            val target = if (state.settings.followPartial) session.previewPosition else session.position
+            val targetLine = (target / WORDS_PER_LINE).coerceIn(0, lines.size - 1)
             lazyState.animateScrollToItem(targetLine)
         }
     }
