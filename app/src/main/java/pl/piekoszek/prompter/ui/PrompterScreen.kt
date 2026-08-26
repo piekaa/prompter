@@ -101,11 +101,8 @@ fun PrompterScreen(
 
     // Top padding = 2 line-heights → reading line appears ~2 lines down from
     // visible area edge regardless of screen/orientation/font.
-    val topPaddingPx = (lineMinHeight * 2).coerceAtLeast(16.dp)
-
-    // Top padding = 2 line-heights → reading line appears ~2 lines down from
-    // visible area edge regardless of screen/orientation/font.
     val topPaddingDp = (lineMinHeight * 2).coerceAtLeast(16.dp)
+    val topPaddingPx = with(density) { topPaddingDp.toPx().toInt() }
 
     LaunchedEffect(session.position, session.previewPosition, session.status) {
         if (!touching && viewportPx > 0 && lines.isNotEmpty()) {

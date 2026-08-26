@@ -206,7 +206,9 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         if (words.isEmpty()) return
         val pos = wordIndex.coerceIn(0, words.size)
         alignment.resetTo(pos)
+        buf.reset()
         engine.reset()
+        fedCount = 0
         updateGrammarWindow(pos)
         update { it.copy(session = it.session.copy(
             position = pos,

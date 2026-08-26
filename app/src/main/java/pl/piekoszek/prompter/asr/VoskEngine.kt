@@ -157,7 +157,9 @@ class VoskEngine(context: Context) {
 
     /** Discards the in-flight partial utterance (e.g. after a manual jump). */
     fun reset() {
-        speech?.reset()
+        io.execute {
+            speech?.reset()
+        }
     }
 
     /**

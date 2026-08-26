@@ -110,11 +110,12 @@ class AlignmentEngine(
 
     // -- internals ---------------------------------------------------------
 
-    private fun windowOf(i: Int): Int = minOf(config.windowSize, i)
+    private fun windowOf(i: Int): Int = if (i <= 0) 0 else minOf(config.windowSize, i)
 
     private fun scoreAt(i: Int, words: List<TranscriptWord>): Double {
         if (i <= 0 || words.isEmpty() || target.isEmpty()) return 0.0
         val w = minOf(windowOf(i), words.size)
+        if (w <= 0) return 0.0
         val start = words.size - w
         var sum = 0.0
         for (j in 0 until w) {
@@ -126,9 +127,9 @@ class AlignmentEngine(
     }
 
     private fun bestPosition(words: List<TranscriptWord>, from: Int): Pair<Int, Double> {
-        val lo = (from - config.searchRadius).coerceAtLeast(1)
+        val lo = (from - config.searchRadius).coerceAtLeast(0)
         val hi = (from + config.searchRadius).coerceAtMost(target.size)
-        var bestI = from.coerceIn(1, target.size)
+        var bestI = from.coerceIn(0, target.size)
         var bestS = scoreAt(bestI, words)
         for (i in lo..hi) {
             if (i == bestI) continue
