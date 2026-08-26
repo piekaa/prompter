@@ -178,9 +178,8 @@ sim(a,b)  = 1.0  jeśli a == b
 - Szukaj optimum **lokalnie**: w oknie `p_prev ± K` (K≈40) — wystarczająco na tempo
   mówienia (~2-3 słowa/s) i tanio (K·W operacji per update).
 - **Hysteresis / anti-jitter**: zmień `p` tylko jeśli `score(i*) > score(p_prev) + margin`
-  (np. margin = 0.15·W). W tył dozwól z większym marginem (mówca cofnął się).
-- Monotonic bias: lekki bonus za `i ≥ p_prev` (mówienie płynie do przodu),
-  ale nie blokuj cofania — przy silnym dowodzie (wysoki score daleko w tył) cofnij.
+  (np. margin = 0.15·W). Pozycja porusza się tylko w przód.
+- Monotonic bias: lekki bonus za `i ≥ p_prev` (mówienie płynie do przodu).
 - `p` → % tekstu → offset przewinięcia.
 
 ### 5.3 Opcja B: grammar = okna fraz (mapping 1:1)

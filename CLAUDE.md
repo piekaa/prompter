@@ -43,7 +43,7 @@ Mic → VoskEngine (SpeechService, bg thread) → callbacks on MAIN thread
 
 **Grammar windowing.** The recognizer vocabulary is a live-swapped window of ±150 words around the current position (`setGrammar`), not the whole script — swapped when `|pos - grammarCenter| > radius/2`. Grammar is a JSON array of words + a single `"[unk]"`; words outside the vocabulary land in `[unk]` and score 0.
 
-**Anti-jitter.** Position moves only when the best local score beats the current position's score by a margin: forward 0.15·W, backward 0.35·W (`backwardMargin`), plus a small forward bias. Similarity tiers: exact = 1.0, diacritic-fold match = 0.5, fuzzy (Levenshtein) capped at 0.3, ratio ≥ 0.5 → 0. Don't raise the fuzzy cap or loosen the margins casually — that's what keeps `p` from jittering on a ~12–18% WER Polish model.
+**Anti-jitter.** Position only moves forward (monotonic). The best local score must beat the current position's score by a forward margin of 0.15·W, plus a small forward bias. Similarity tiers: exact = 1.0, diacritic-fold match = 0.5, fuzzy (Levenshtein) capped at 0.3, ratio ≥ 0.5 → 0. Don't raise the fuzzy cap or loosen the margin casually — that's what keeps `p` from jittering on a ~12–18% WER Polish model.
 
 **Manual override.** `manualJump(pos)` = commit position + clear alignment transcript + `engine.reset()` (discard in-flight partial) + refresh grammar window. Any new "jump" feature must do all four, or alignment resumes from stale state.
 

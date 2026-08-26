@@ -87,9 +87,9 @@ fun PrompterScreen(
     val dimColor = spokenColor.copy(alpha = 0.35f)
     val background = if (dark) Color.Black else Color(0xFFFAFAF7)
 
-    // Position used for the highlight (committed, or live preview).
-    val highlight = if (state.settings.followPartial) session.previewPosition
-        else session.position
+    // Position used for the highlight: now always follows preview position for
+    // immediate visual feedback on partial words (followPartial is always on).
+    val highlight = session.highlight
 
     val density = LocalDensity.current
     val lineMinHeight = remember(fontSizeSp) { (fontSizeSp * 1.8f).dp }
@@ -104,11 +104,15 @@ fun PrompterScreen(
     val topPaddingDp = (lineMinHeight * 2).coerceAtLeast(16.dp)
     val topPaddingPx = with(density) { topPaddingDp.toPx().toInt() }
 
-    LaunchedEffect(session.position, session.previewPosition, session.status) {
+    LaunchedEffect(session.wordsFed, session.previewPosition, session.status, session.highlight) {
         if (!touching && viewportPx > 0 && lines.isNotEmpty()) {
-            val target = if (state.settings.followPartial) session.previewPosition else session.position
+            // Scroll to tentative preview position (always follows partial)
+            val target = session.previewPosition
             val targetLine = (target / WORDS_PER_LINE).coerceIn(0, lines.size - 1)
-            lazyState.animateScrollToItem(targetLine)
+            // Only scroll if target line changed to avoid jitter
+            if (lazyState.firstVisibleItemIndex != targetLine) {
+                lazyState.animateScrollToItem(targetLine)
+            }
         }
     }
 

@@ -30,8 +30,6 @@ data class Settings(
     val confThreshold: Float = 0.5f,
     /** Hysteresis factor (forward moves): margin = factor · W. */
     val margin: Float = 0.15f,
-    /** Highlight (and preview position) follows the live partial. */
-    val followPartial: Boolean = false,
 )
 
 data class SessionState(
@@ -47,6 +45,10 @@ data class SessionState(
     val finished: Boolean = false,
     /** Short view of the recent transcript for the status line. */
     val liveTranscript: String = "",
+    /** Cumulative highlight: words with index < highlight are spoken. */
+    val highlight: Int = 0,
+    /** Number of confirmed words fed into alignment (for scroll triggering). */
+    val wordsFed: Int = 0,
 )
 
 data class UiState(
@@ -78,6 +80,8 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
     private var fedCount = 0
     /** Center of the grammar window currently loaded into the recognizer. */
     private var grammarCenter = 0
+    /** Maximum position reached during this session (for cumulative highlight). */
+    private var maxPosition = 0
 
     init {
         // Kick off the one-time model unpack early (idempotent); scripts are
@@ -150,10 +154,11 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         currentWords = words
         fedCount = 0
         grammarCenter = 0
+        maxPosition = 0
         buf = TranscriptBuf()
         alignment = buildAlignmentEngine()
         alignment.setTarget(words)
-        update { it.copy(session = SessionState(status = AsrStatus.STARTING)) }
+        update { it.copy(session = SessionState(status = AsrStatus.STARTING, wordsFed = 0)) }
         val grammar = GrammarBuilder.toJson(GrammarBuilder.window(words, 0))
         engine.start(
             grammarJson = grammar,
@@ -209,11 +214,14 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         buf.reset()
         engine.reset()
         fedCount = 0
+        maxPosition = 0  // Clear cumulative highlight on manual jump
         updateGrammarWindow(pos)
         update { it.copy(session = it.session.copy(
             position = pos,
             previewPosition = pos,
             progress = alignment.progress,
+            highlight = 0,
+            wordsFed = 0,
         )) }
     }
 
@@ -233,10 +241,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleBackground() {
         setSettings { it.copy(darkBackground = !it.darkBackground) }
-    }
-
-    fun setFollowPartial(value: Boolean) {
-        setSettings { it.copy(followPartial = value) }
     }
 
     fun setConfThreshold(value: Float) {
@@ -263,25 +267,28 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
     private val engineListener = object : VoskEngine.Listener {
         override fun onPartial(text: String) {
             buf.onPartial(text)
-            if (_state.value.settings.followPartial) {
-                val partial = buf.partialWords.map { TranscriptWord(it) }
-                if (partial.isNotEmpty()) {
-                    val preview = alignment.preview(partial)
-                    update { it.copy(session = it.session.copy(previewPosition = preview)) }
-                }
+            // Always follow partial for live scrolling and highlighting
+            val partial = buf.partialWords.map { TranscriptWord(it) }
+            if (partial.isNotEmpty()) {
+                val preview = alignment.preview(partial)
+                val words = currentWords
+                update { it.copy(session = it.session.copy(
+                    previewPosition = preview,
+                    highlight = preview,
+                    progress = if (words.isEmpty()) 0f else (preview.toFloat() / words.size).coerceIn(0f, 1f)
+                )) }
             }
             updateLiveTranscript()
         }
 
         override fun onFinal(text: String) {
             buf.onFinal(text)
+            // Always process final result and update position/highlight
             val words = buf.confirmedWords
-            if (words.size > fedCount) {
-                val fresh = words.subList(fedCount, words.size)
-                fedCount = words.size
-                val update = alignment.updateFinal(fresh.map { TranscriptWord(it) })
-                onPosition(update.position)
-            }
+            val fresh = words.subList(fedCount, words.size)
+            fedCount = words.size
+            alignment.updateFinal(fresh.map { TranscriptWord(it) })
+            onPosition(alignment.position(), fedCount)
             updateLiveTranscript()
         }
 
@@ -296,16 +303,20 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun onPosition(pos: Int) {
+    private fun onPosition(pos: Int, wordsFed: Int) {
         val words = currentWords
         val finished = words.isNotEmpty() && pos >= words.size
         updateGrammarWindow(pos)
+        // Update max position for cumulative highlight (words never "unhighlight")
+        maxPosition = maxPosition.coerceAtLeast(pos)
         update { st ->
             st.copy(session = st.session.copy(
                 position = pos,
                 previewPosition = pos,
                 progress = alignment.progress,
                 finished = finished,
+                highlight = maxPosition,
+                wordsFed = wordsFed,
                 status = if (finished) AsrStatus.FINISHED else st.session.status,
             ))
         }
@@ -335,7 +346,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
             AlignmentEngine.AlignmentConfig(
                 confThreshold = s.confThreshold.toDouble(),
                 forwardMargin = s.margin.toDouble(),
-                backwardMargin = s.margin.toDouble() * BACKWARD_MARGIN_RATIO,
             )
         )
     }
@@ -368,7 +378,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
                     darkBackground = j.optBoolean("darkBackground", true),
                     confThreshold = j.optDouble("confThreshold", 0.5).toFloat(),
                     margin = j.optDouble("margin", 0.15).toFloat(),
-                    followPartial = j.optBoolean("followPartial", false),
                 )
             }.getOrDefault(Settings())
         } else {
@@ -386,7 +395,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
                     .put("darkBackground", s.darkBackground)
                     .put("confThreshold", s.confThreshold.toDouble())
                     .put("margin", s.margin.toDouble())
-                    .put("followPartial", s.followPartial)
                     .toString()
             )
         }
@@ -401,7 +409,5 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         const val MIN_FONT_SP = 72
         const val MAX_FONT_SP = 144
         private const val SETTINGS_FILE = "settings.json"
-        /** backwardMargin = 0.35·W vs forwardMargin = 0.15·W → 7/3. */
-        private const val BACKWARD_MARGIN_RATIO = 7.0 / 3.0
     }
 }

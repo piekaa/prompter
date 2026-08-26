@@ -11,10 +11,10 @@ package pl.piekoszek.prompter.core
  *  - For a candidate p=i we score the last W transcript words against
  *    target[i-W+1 .. i]:  score(i) = Σ sim(s[j], t[...]).
  *  - Candidate search is local: p_prev ± searchRadius (cheap, matches speech rate).
+ *  - Position only moves forward (monotonic alignment).
  *  - Hysteresis: move only if the best score beats the current position's score
- *    by margin = factor · W (larger factor when moving backwards).
- *  - Forward bias: small bonus for i ≥ p_prev (speech flows forward),
- *    but a strong far-backward match still wins (speaker repeated an earlier part).
+ *    by margin = factor · W.
+ *  - Forward bias: small bonus for i ≥ p_prev (speech flows forward).
  */
 class AlignmentEngine(
     private val config: AlignmentConfig = AlignmentConfig(),
@@ -25,10 +25,8 @@ class AlignmentEngine(
         val windowSize: Int = 6,
         /** Local search radius around current position (words). */
         val searchRadius: Int = 40,
-        /** Margin factor (forward moves): move when best > current + factor·W. */
+        /** Margin factor: move when best > current + factor·W. */
         val forwardMargin: Double = 0.15,
-        /** Margin factor (backward moves) — stricter, anti-jitter. */
-        val backwardMargin: Double = 0.35,
         /** Words with conf below this contribute nothing to the score. */
         val confThreshold: Double = 0.5,
         /** Small per-word bonus for forward candidates (monotonic bias). */
@@ -65,7 +63,8 @@ class AlignmentEngine(
 
     /**
      * Feeds newly finalized transcript words (append-only) and re-derives the
-     * position with hysteresis. Returns the committed position.
+     * position with hysteresis. Position only moves forward.
+     * Returns the committed position.
      */
     fun updateFinal(words: List<TranscriptWord>): Update {
         if (words.isNotEmpty()) {
@@ -76,10 +75,10 @@ class AlignmentEngine(
         if (target.isEmpty() || transcript.isEmpty()) {
             return Update(position, false, 0.0, 0.0)
         }
-        val (best, bestScore) = bestPosition(transcript, position)
+        // Only consider positions >= current position (forward-only)
+        val (best, bestScore) = bestPositionForward(transcript, position)
         val prevScore = scoreAt(position, transcript)
-        val factor = if (best < position) config.backwardMargin else config.forwardMargin
-        val margin = factor * windowOf(best)
+        val margin = config.forwardMargin * windowOf(best)
         val moved = best != position && bestScore > prevScore + margin
         if (moved) position = best
         return Update(position, moved, bestScore, prevScore)
@@ -88,10 +87,11 @@ class AlignmentEngine(
     /**
      * Tentative position including the live partial (for a soft UI preview —
      * PROJEKT §6 "delikatny podgląd na partial"). Does NOT commit.
+     * Position only moves forward.
      */
     fun preview(partialWords: List<TranscriptWord>): Int {
         if (partialWords.isEmpty() || target.isEmpty()) return position
-        return bestPosition(transcript + partialWords, position).first
+        return bestPositionForward(transcript + partialWords, position).first
     }
 
     /**
@@ -126,15 +126,15 @@ class AlignmentEngine(
         return sum
     }
 
-    private fun bestPosition(words: List<TranscriptWord>, from: Int): Pair<Int, Double> {
-        val lo = (from - config.searchRadius).coerceAtLeast(0)
+    private fun bestPositionForward(words: List<TranscriptWord>, from: Int): Pair<Int, Double> {
+        // Only search forward from current position (position only moves forward).
         val hi = (from + config.searchRadius).coerceAtMost(target.size)
         var bestI = from.coerceIn(0, target.size)
         var bestS = scoreAt(bestI, words)
-        for (i in lo..hi) {
+        for (i in from..hi) {
             if (i == bestI) continue
             var s = scoreAt(i, words)
-            if (i >= from) s += config.forwardBias * windowOf(i)
+            s += config.forwardBias * windowOf(i)
             if (s > bestS) {
                 bestS = s
                 bestI = i

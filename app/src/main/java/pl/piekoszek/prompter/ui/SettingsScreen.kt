@@ -13,7 +13,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -24,7 +23,7 @@ import androidx.compose.ui.unit.dp
 import pl.piekoszek.prompter.PrompterViewModel
 
 /**
- * Screen 3 (PROJEKT 6): font, background, alignment thresholds, partial follow.
+ * Screen 3 (PROJEKT 6): font, background, alignment thresholds.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,20 +66,6 @@ fun SettingsScreen(
             RowToggle(
                 label = if (s.darkBackground) "Tło: czarne" else "Tło: białe",
                 onToggle = { vm.toggleBackground() },
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                "Podążaj za częściowym (partial)",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                "Podświetlanie i pozycja podglądowa reagują na żywy fragment, zanim zdanie się zamknie.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Switch(
-                checked = s.followPartial,
-                onCheckedChange = { vm.setFollowPartial(it) },
             )
 
             Spacer(modifier = Modifier.height(16.dp))

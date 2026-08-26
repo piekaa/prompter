@@ -74,14 +74,15 @@ class AlignmentEngineTest {
     }
 
     @Test
-    fun `strong backward evidence moves position back`() {
+    fun `position does not move backwards even with stronger backward evidence`() {
         val engine = AlignmentEngine()
         engine.setTarget(target)
         feed(engine, *target.subList(0, 20).toTypedArray())
         assertEquals(20L, engine.position().toLong())
-        // speaker clearly rewinds to an earlier part of the text
+        // speaker rewinds and repeats an earlier part
         feed(engine, *target.subList(14, 18).toTypedArray())
-        assertEquals(18L, engine.position().toLong())
+        // position must not go below current - stays at 20 since no forward progress
+        assertTrue("position must not move backwards", engine.position() >= 20)
     }
 
     @Test
