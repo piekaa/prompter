@@ -56,6 +56,10 @@ class TranscriptBuf {
         else tail.joinToString(" ")
     }
 
+    /** Recent confirmed words only (no partial). */
+    val recentWords: List<String>
+        get() = confirmed.takeLast(16)
+
     private companion object {
         private val WHITESPACE = Regex("\\s+")
     }

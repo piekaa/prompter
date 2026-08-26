@@ -104,7 +104,7 @@ fun PrompterScreen(
     val topPaddingDp = (lineMinHeight * 2).coerceAtLeast(16.dp)
     val topPaddingPx = with(density) { topPaddingDp.toPx().toInt() }
 
-    LaunchedEffect(session.wordsFed, session.previewPosition, session.status, session.highlight) {
+    LaunchedEffect(session.position, session.previewPosition, session.status, session.highlight) {
         if (!touching && viewportPx > 0 && lines.isNotEmpty()) {
             // Scroll to tentative preview position (always follows partial)
             val target = session.previewPosition

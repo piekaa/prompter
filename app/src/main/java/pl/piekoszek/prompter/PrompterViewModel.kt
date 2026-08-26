@@ -47,8 +47,6 @@ data class SessionState(
     val liveTranscript: String = "",
     /** Cumulative highlight: words with index < highlight are spoken. */
     val highlight: Int = 0,
-    /** Number of confirmed words fed into alignment (for scroll triggering). */
-    val wordsFed: Int = 0,
 )
 
 data class UiState(
@@ -72,16 +70,13 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(loadInitialState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
-    private var buf = TranscriptBuf()
     private var alignment = buildAlignmentEngine()
     /** Target words of the current session (normalized). */
     private var currentWords: List<String> = emptyList()
-    /** How many confirmed words were already fed into [alignment]. */
-    private var fedCount = 0
     /** Center of the grammar window currently loaded into the recognizer. */
     private var grammarCenter = 0
-    /** Maximum position reached during this session (for cumulative highlight). */
-    private var maxPosition = 0
+    /** Transcript buffer for live transcript display. */
+    private val buf = TranscriptBuf()
 
     init {
         // Kick off the one-time model unpack early (idempotent); scripts are
@@ -152,13 +147,11 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         currentWords = words
-        fedCount = 0
         grammarCenter = 0
-        maxPosition = 0
-        buf = TranscriptBuf()
+        buf.reset()
         alignment = buildAlignmentEngine()
         alignment.setTarget(words)
-        update { it.copy(session = SessionState(status = AsrStatus.STARTING, wordsFed = 0)) }
+        update { it.copy(session = SessionState(status = AsrStatus.STARTING)) }
         val grammar = GrammarBuilder.toJson(GrammarBuilder.window(words, 0))
         engine.start(
             grammarJson = grammar,
@@ -213,15 +206,12 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         alignment.resetTo(pos)
         buf.reset()
         engine.reset()
-        fedCount = 0
-        maxPosition = 0  // Clear cumulative highlight on manual jump
         updateGrammarWindow(pos)
         update { it.copy(session = it.session.copy(
             position = pos,
             previewPosition = pos,
             progress = alignment.progress,
             highlight = 0,
-            wordsFed = 0,
         )) }
     }
 
@@ -266,30 +256,34 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
 
     private val engineListener = object : VoskEngine.Listener {
         override fun onPartial(text: String) {
-            buf.onPartial(text)
-            // Always follow partial for live scrolling and highlighting
-            val partial = buf.partialWords.map { TranscriptWord(it) }
-            if (partial.isNotEmpty()) {
-                val preview = alignment.preview(partial)
-                val words = currentWords
-                update { it.copy(session = it.session.copy(
-                    previewPosition = preview,
-                    highlight = preview,
-                    progress = if (words.isEmpty()) 0f else (preview.toFloat() / words.size).coerceIn(0f, 1f)
-                )) }
-            }
-            updateLiveTranscript()
+            // Partial contains all words spoken so far (live, may still change).
+            // We use this directly for alignment - no separate "final" handling.
+            val words = text.trim().split(WHITESPACE).filter { it.isNotEmpty() }
+            if (words.isEmpty()) return
+
+            // Feed all words to alignment for position tracking
+            val transcriptWords = words.map { TranscriptWord(it) }
+            val newPos = alignment.updateForPartial(transcriptWords)
+
+            // Update cumulative highlight (words never "unhighlight")
+            val currentHighlight = _state.value.session.highlight
+            val nextHighlight = currentHighlight.coerceAtLeast(newPos)
+
+            val targetWords = currentWords
+            update { it.copy(session = it.session.copy(
+                position = newPos,
+                previewPosition = newPos,
+                highlight = nextHighlight,
+                progress = if (targetWords.isEmpty()) 0f else (newPos.toFloat() / targetWords.size).coerceIn(0f, 1f),
+                finished = newPos >= targetWords.size,
+            )) }
+
+            updateLiveTranscript(words)
         }
 
+        /** No-op: final results not used in partial-only mode. */
         override fun onFinal(text: String) {
-            buf.onFinal(text)
-            // Always process final result and update position/highlight
-            val words = buf.confirmedWords
-            val fresh = words.subList(fedCount, words.size)
-            fedCount = words.size
-            alignment.updateFinal(fresh.map { TranscriptWord(it) })
-            onPosition(alignment.position(), fedCount)
-            updateLiveTranscript()
+            // Intentionally empty - we only use partial results for alignment.
         }
 
         override fun onEnded() {
@@ -303,26 +297,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun onPosition(pos: Int, wordsFed: Int) {
-        val words = currentWords
-        val finished = words.isNotEmpty() && pos >= words.size
-        updateGrammarWindow(pos)
-        // Update max position for cumulative highlight (words never "unhighlight")
-        maxPosition = maxPosition.coerceAtLeast(pos)
-        update { st ->
-            st.copy(session = st.session.copy(
-                position = pos,
-                previewPosition = pos,
-                progress = alignment.progress,
-                finished = finished,
-                highlight = maxPosition,
-                wordsFed = wordsFed,
-                status = if (finished) AsrStatus.FINISHED else st.session.status,
-            ))
-        }
-        if (finished) engine.stop()
-    }
-
     /** Swaps the recognizer vocabulary for the window around [pos] (PROJEKT 8). */
     private fun updateGrammarWindow(pos: Int) {
         val words = currentWords
@@ -333,8 +307,16 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun updateLiveTranscript() {
-        val recent = buf.recent()
+    private fun updateLiveTranscript(words: List<String> = emptyList()) {
+        // Use provided words if available (from onPartial), otherwise get from transcript buffer
+        val recent = if (words.isNotEmpty()) {
+            words.takeLast(16).joinToString(" ")
+        } else {
+            // Fallback: get words from transcript buffer if still needed elsewhere
+            val recentWords = buf.recentWords
+            if (recentWords.isNotEmpty()) recentWords.takeLast(16).joinToString(" ")
+            else ""
+        }
         update { it.copy(session = it.session.copy(liveTranscript = recent)) }
     }
 
@@ -409,5 +391,7 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         const val MIN_FONT_SP = 72
         const val MAX_FONT_SP = 144
         private const val SETTINGS_FILE = "settings.json"
+        /** WHITESPACE regex for splitting text into words. */
+        private val WHITESPACE = Regex("\\s+")
     }
 }

@@ -61,33 +61,48 @@ class AlignmentEngine(
         transcript = emptyList()
     }
 
+    // For tests: track cumulatively fed words
+    internal var testFedWords: List<String> = emptyList()
+        private set
+
     /**
-     * Feeds newly finalized transcript words (append-only) and re-derives the
-     * position with hysteresis. Position only moves forward.
-     * Returns the committed position.
+     * Update position based on partial transcript (all words spoken so far).
+     * The partial is live and may still change, but we track position based
+     * on the best alignment found. Position only moves forward.
+     *
+     * This is the main entry point for alignment in partial-only mode.
      */
-    fun updateFinal(words: List<TranscriptWord>): Update {
-        if (words.isNotEmpty()) {
-            val merged = transcript + words
-            transcript = if (merged.size > MAX_TRANSCRIPT_WORDS)
-                merged.takeLast(MAX_TRANSCRIPT_WORDS) else merged
-        }
-        if (target.isEmpty() || transcript.isEmpty()) {
-            return Update(position, false, 0.0, 0.0)
-        }
-        // Only consider positions >= current position (forward-only)
+    fun updateForPartial(words: List<TranscriptWord>): Int {
+        if (target.isEmpty()) return position
+
+        // Store the full transcript for scoring
+        transcript = if (words.size > MAX_TRANSCRIPT_WORDS)
+            words.takeLast(MAX_TRANSCRIPT_WORDS) else words
+
+        // Find best position using hysteresis (forward-only with margin)
         val (best, bestScore) = bestPositionForward(transcript, position)
         val prevScore = scoreAt(position, transcript)
         val margin = config.forwardMargin * windowOf(best)
         val moved = best != position && bestScore > prevScore + margin
         if (moved) position = best
-        return Update(position, moved, bestScore, prevScore)
+
+        return position
     }
 
     /**
-     * Tentative position including the live partial (for a soft UI preview —
-     * PROJEKT §6 "delikatny podgląd na partial"). Does NOT commit.
-     * Position only moves forward.
+     * Alias for updateForPartial - used by tests for backwards compatibility.
+     * In the old code, this was append-only; now we feed all words cumulatively.
+     */
+    fun updateFinal(words: List<TranscriptWord>): Int {
+        // For tests: track words cumulatively to simulate old behavior
+        testFedWords = testFedWords + words.map { it.text }
+        val allWords = testFedWords.map { TranscriptWord(it) }
+        return updateForPartial(allWords)
+    }
+
+    /**
+     * Tentative position including the live partial (for a soft UI preview).
+     * Does NOT update internal state - pure calculation.
      */
     fun preview(partialWords: List<TranscriptWord>): Int {
         if (partialWords.isEmpty() || target.isEmpty()) return position

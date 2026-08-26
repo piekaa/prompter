@@ -17,8 +17,12 @@ class AlignmentEngineTest {
         "abc", "def", "ghi", "jkl", "mno", "pqr", "stu", "vwx",
     )
 
-    private fun feed(engine: AlignmentEngine, vararg chunk: String) {
-        engine.updateFinal(chunk.map { TranscriptWord(it) })
+    /**
+     * Feed new words to the engine. Appends to the transcript (old-style API).
+     * Now implemented via updateForPartial with cumulative tracking.
+     */
+    private fun feed(engine: AlignmentEngine, vararg words: String) {
+        engine.updateFinal(words.map { TranscriptWord(it) })
     }
 
     @Test
