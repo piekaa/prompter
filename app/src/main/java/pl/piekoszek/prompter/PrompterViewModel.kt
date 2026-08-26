@@ -22,9 +22,6 @@ import java.io.File
 /** ASR/session lifecycle as seen by the UI. */
 enum class AsrStatus { IDLE, STARTING, LISTENING, PAUSED, FINISHED, ERROR }
 
-/** Who drives the scroll: speech or the user's finger. */
-enum class FollowMode { AUTO, MANUAL }
-
 /** User-tunable parameters (persisted). */
 data class Settings(
     val fontSizeSp: Int = PrompterViewModel.MIN_FONT_SP,
@@ -40,7 +37,6 @@ data class Settings(
 data class SessionState(
     val status: AsrStatus = AsrStatus.IDLE,
     val statusMessage: String? = null,
-    val mode: FollowMode = FollowMode.AUTO,
     /** Committed position: words spoken (AlignmentEngine semantics). */
     val position: Int = 0,
     /** Tentative position including the live partial (not committed). */
@@ -164,7 +160,7 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
             listener = engineListener,
             onStarted = {
                 update { it.copy(session = it.session.copy(
-                    status = AsrStatus.LISTENING, mode = FollowMode.AUTO,
+                    status = AsrStatus.LISTENING,
                 )) }
             },
             onError = { msg ->
@@ -200,8 +196,10 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Manual scroll override (PROJEKT 5.4): commit [wordIndex] as the
-     * position, clear the alignment transcript, flush the recognizer partial.
+     * Re-anchor to a user-scrolled position (PROJEKT 5.4): commit
+     * [wordIndex] as the position, clear the alignment transcript, flush the
+     * recognizer partial, refresh the grammar window. Auto-follow is NOT
+     * switched off — the next committed word scrolls the text from here.
      */
     fun manualJump(wordIndex: Int) {
         val words = currentWords
@@ -211,7 +209,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         engine.reset()
         updateGrammarWindow(pos)
         update { it.copy(session = it.session.copy(
-            mode = FollowMode.MANUAL,
             position = pos,
             previewPosition = pos,
             progress = alignment.progress,
@@ -220,11 +217,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
 
     fun jumpToEnd() {
         manualJump(currentWords.size)
-    }
-
-    /** Switch back to auto-follow; alignment already sits at the visible spot. */
-    fun resumeAuto() {
-        update { it.copy(session = it.session.copy(mode = FollowMode.AUTO)) }
     }
 
     // -- settings ------------------------------------------------------------

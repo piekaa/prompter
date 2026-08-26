@@ -196,7 +196,8 @@ start od 5.2 (słowa) — więcej danych, więcej kontroli.
 - mówiłeś 120 słów, ASR pomyliło 10 → `p` i tak ≈ 120,
 - powtórzyłeś zdanie → transcript dłuższy, ale okno wciąż dopasowuje się do `T`,
 - cisza 5 s → `onResult` zamyka zdanie, `p` stabilny, ekran nie drży (hysteresis),
-- ręcznie przewinięto ekran → tryb manual, `p` = pozycja z UI (reset alignmentu).
+- ręcznie przewinięto ekran → `p` = pozycja z UI (reset alignmentu); auto-follow
+  się nie wyłącza — następne wypowiedziane słowo znów przewija tekst.
 
 ## 6. UX / ekrany
 
@@ -204,7 +205,7 @@ start od 5.2 (słowa) — więcej danych, więcej kontroli.
 2. **Prompter** — pełny ekran, tekst, linia czytania (center rule), podświetlenie
    wypowiedzianych słów (np. 70% jaśniejsze), pasek postępu, przyciski:
    start/stop, pauza, +/− font, prędkość (dla trybu manualnego follow),
-   „do końca" (skok), tryb: auto | manual.
+   „do końca" (skok).
 3. **Ustawienia** — model (rozmiar), progi (margin, conf), kolor tła (czerń/biel),
    auto-lock off (ekran zawsze na górze), do-not-disturb w trakcie.
 
@@ -212,7 +213,8 @@ Zasady:
 - przewijanie tylko na **final result** (stabilne) + delikatny „podgląd" na partial
   (opcja),
 - animacja przewinięcia: easing ~300 ms, nigdy skok > 2 linii bez powodu,
-- manual override: drag = tryb manual; ponowne „auto" przywraca follow,
+- manual override: drag przewija i resetuje alignment do widocznej linii;
+  auto-follow zostaje włączone — kolejne wypowiedziane słowo przewija dalej,
 - status ASR widoczny: „słucham…" / „pauza" / błąd (np. brak zezwolenia mikrofonu).
 
 ## 7. Milestone'y

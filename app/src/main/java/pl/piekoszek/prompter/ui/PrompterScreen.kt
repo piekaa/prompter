@@ -34,7 +34,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -45,7 +45,6 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import pl.piekoszek.prompter.AsrStatus
-import pl.piekoszek.prompter.FollowMode
 import pl.piekoszek.prompter.PrompterViewModel
 import pl.piekoszek.prompter.core.Normalizer
 
@@ -60,8 +59,13 @@ private const val WORDS_PER_LINE = 10
  *   `animateScrollToItem(line)` + `scrollBy(viewport/2 - lineH/2)`.
  * - Spoken words (index < position) are full color; the rest dimmed.
  *   With "follow partial" enabled the highlight uses the tentative position.
- * - Touching the text cancels auto-scroll; releasing commits the visible
- *   line as the new position and switches to MANUAL (PROJEKT 5.4).
+ * - Dragging the text re-anchors the reading position: on release a real
+ *   drag (list actually moved) commits the visible line (PROJEKT 5.4), so
+ *   alignment + grammar window resume where the user left it. There is no
+ *   permanent manual mode — auto-follow stays on, and the next committed
+ *   word scrolls the text again. A bare tap commits nothing.
+ * - While a finger is down, auto-scroll pauses so it never fights the drag;
+ *   a pointer cancel only clears the pause (never sticks it).
  */
 @Composable
 fun PrompterScreen(
@@ -91,24 +95,23 @@ fun PrompterScreen(
     val lineMinHeight = remember(fontSizeSp) { (fontSizeSp * 1.8f).dp }
     var viewportPx by remember { mutableIntStateOf(0) }
     var touching by remember { mutableStateOf(false) }
+    /** (firstVisibleItemIndex, scrollOffset) when the current touch started. */
+    var touchStart by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     val lazyState = rememberLazyListState()
 
-    // Auto-scroll: center the line containing the committed word.
-    // Runs when the position or mode changes; MANUAL mode never auto-scrolls.
-    LaunchedEffect(session.position, session.mode, session.status) {
-        if (
-            session.mode == FollowMode.AUTO &&
-            !touching &&
-            viewportPx > 0 &&
-            lines.isNotEmpty()
-        ) {
+    // Top padding = 2 line-heights → reading line appears ~2 lines down from
+    // visible area edge regardless of screen/orientation/font.
+    val topPaddingPx = (lineMinHeight * 2).coerceAtLeast(16.dp)
+
+    // Top padding = 2 line-heights → reading line appears ~2 lines down from
+    // visible area edge regardless of screen/orientation/font.
+    val topPaddingDp = (lineMinHeight * 2).coerceAtLeast(16.dp)
+
+    LaunchedEffect(session.position, session.status) {
+        if (!touching && viewportPx > 0 && lines.isNotEmpty()) {
             val targetLine = (session.position / WORDS_PER_LINE)
                 .coerceIn(0, lines.size - 1)
-            val item = lazyState.layoutInfo.visibleItemsInfo
-                .firstOrNull { it.index == targetLine }
-            val itemHeight = (item?.size ?: with(density) { lineMinHeight.toPx() }).toInt()
-            val offset = (viewportPx / 2f - itemHeight / 2f).toInt().coerceAtLeast(0)
-            lazyState.animateScrollToItem(targetLine, offset)
+            lazyState.animateScrollToItem(targetLine)
         }
     }
 
@@ -135,23 +138,40 @@ fun PrompterScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             LazyColumn(
                 state = lazyState,
-                contentPadding = PaddingValues(vertical = 16.dp),
+                contentPadding = PaddingValues(top = topPaddingDp, bottom = 16.dp),
                 modifier = Modifier
                     .weight(1f)
                     .pointerInput(lazyState) {
                         // Observe touch down/up on the text area without
                         // consuming events (the list still scrolls natively).
+                        // Press pauses auto-scroll; release commits the
+                        // visible line ONLY if the list actually moved (a
+                        // real drag), so alignment re-anchors where the user
+                        // left it and the next word spoken scrolls again.
+                        // A bare tap commits nothing; cancel just unpauses.
                         awaitPointerEventScope {
                             while (true) {
                                 val event = awaitPointerEvent()
-                                for (change in event.changes) {
-                                    if (change.type != PointerType.Touch) continue
-                                    if (change.pressed) {
+                                when (event.type) {
+                                    PointerEventType.Press -> {
                                         touching = true
-                                    } else if (touching) {
-                                        touching = false
-                                        commitVisibleLine(lazyState, viewportPx, vm)
+                                        val idx = lazyState.firstVisibleItemIndex
+                                        val off = lazyState.firstVisibleItemScrollOffset
+                                        touchStart = idx to off
                                     }
+                                    PointerEventType.Release -> {
+                                        if (touching) {
+                                            touching = false
+                                            val start = touchStart
+                                            touchStart = null
+                                            val idx = lazyState.firstVisibleItemIndex
+                                            val off = lazyState.firstVisibleItemScrollOffset
+                                            if (start != null && start != (idx to off)) {
+                                                commitVisibleLine(lazyState, viewportPx, vm)
+                                            }
+                                        }
+                                    }
+                                    PointerEventType.Move -> Unit
                                 }
                             }
                         }
@@ -225,13 +245,6 @@ fun PrompterScreen(
                 }
                 TextButton(onClick = { vm.jumpToEnd() }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("⏭")
-                }
-                TextButton(
-                    onClick = { vm.resumeAuto() },
-                    enabled = session.mode == FollowMode.MANUAL,
-                    modifier = Modifier.heightIn(min = 48.dp),
-                ) {
-                    Text(if (session.mode == FollowMode.MANUAL) "AUTO" else "auto")
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 TextButton(onClick = onBack, modifier = Modifier.heightIn(min = 48.dp)) {
