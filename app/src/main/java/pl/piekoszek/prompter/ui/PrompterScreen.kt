@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
@@ -25,6 +26,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +47,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import pl.piekoszek.prompter.AsrStatus
 import pl.piekoszek.prompter.PrompterViewModel
 import pl.piekoszek.prompter.core.Normalizer
@@ -100,6 +103,38 @@ fun PrompterScreen(
     /** (firstVisibleItemIndex, scrollOffset) when the current touch started. */
     var touchStart by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     val lazyState = rememberLazyListState()
+
+    /**
+     * Debug: vertical position of the last read word (words[highlight-1]) as
+     * a % of the visible viewport height — 0% = top, 100% = bottom.
+     * Approximation: uses the line's center, so in a wrapped line it is the
+     * middle of the line, not the exact word row.
+     */
+    val lastWordDebug = remember(lazyState, words) {
+        derivedStateOf {
+            val h = state.session.highlight
+            if (h <= 0) {
+                null
+            } else {
+                val idx = h - 1
+                if (idx >= words.size) {
+                    null
+                } else {
+                    val lineIdx = idx / WORDS_PER_LINE
+                    val info = lazyState.layoutInfo
+                    val item = info.visibleItemsInfo.firstOrNull { it.index == lineIdx }
+                    val vp = info.viewportSize.height
+                    val percent = if (item != null && vp > 0) {
+                        val center = (item.offset - info.viewportStartOffset) + item.size.toFloat() / 2f
+                        (center / vp * 100f).roundToInt()
+                    } else {
+                        null
+                    }
+                    words[idx] to percent
+                }
+            }
+        }
+    }.value
 
     // Top padding = 2 line-heights → reading line appears ~2 lines down from
     // visible area edge regardless of screen/orientation/font.
@@ -259,6 +294,21 @@ fun PrompterScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+
+        // Debug overlay (top-right): last read word + its position in % of
+        // screen height (0% top … 100% bottom).
+        lastWordDebug?.let { (word, percent) ->
+            Text(
+                text = "dbg: «$word» ${percent?.let { "$it%" } ?: "offscreen"}",
+                color = Color(0xFFFFE082),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
     }
