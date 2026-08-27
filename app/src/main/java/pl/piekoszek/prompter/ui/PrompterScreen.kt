@@ -39,9 +39,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import pl.piekoszek.prompter.AsrStatus
@@ -57,8 +58,9 @@ private const val WORDS_PER_LINE = 10
  *   minimum fixed height so scroll math is stable (long lines may wrap).
  * - Auto mode: on every committed position change, center the current line —
  *   `animateScrollToItem(line)` + `scrollBy(viewport/2 - lineH/2)`.
- * - Spoken words (index < position) are full color; the rest dimmed.
- *   With "follow partial" enabled the highlight uses the tentative position.
+ * - Spoken words (index < position) are full white; unspoken words are dimmed
+ *   white. With "follow partial" enabled the highlight uses the tentative
+ *   position.
  * - Dragging the text re-anchors the reading position: on release a real
  *   drag (list actually moved) commits the visible line (PROJEKT 5.4), so
  *   alignment + grammar window resume where the user left it. There is no
@@ -83,8 +85,8 @@ fun PrompterScreen(
     val dark = state.settings.darkBackground
     val session = state.session
 
-    val spokenColor = if (dark) Color.White else Color(0xFF141414)
-    val dimColor = spokenColor.copy(alpha = 0.35f)
+    // All text is white; spoken words have underline, unspoken don't
+    val spokenColor = Color.White
     val background = if (dark) Color.Black else Color(0xFFFAFAF7)
 
     // Position used for the highlight: now always follows preview position for
@@ -181,7 +183,7 @@ fun PrompterScreen(
             ) {
                 itemsIndexed(lines, key = { index, _ -> index }) { index, line ->
                     Text(
-                        text = lineAnnotated(line, index * WORDS_PER_LINE, highlight, spokenColor, dimColor),
+                        text = lineAnnotated(line, index * WORDS_PER_LINE, highlight, spokenColor),
                         fontSize = fontSizeSp.sp,
                         // Explicit pitch: the theme's LocalTextStyle carries a
                         // fixed lineHeight (24sp) which would collapse wrapped
@@ -198,14 +200,14 @@ fun PrompterScreen(
             // -- status + controls -------------------------------------------------
             Text(
                 text = statusText(session.status, session.statusMessage),
-                color = dimColor,
+                color = spokenColor,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(start = 16.dp, top = 8.dp),
             )
             if (session.liveTranscript.isNotEmpty()) {
                 Text(
                     text = session.liveTranscript,
-                    color = dimColor,
+                    color = spokenColor,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier
                         .padding(horizontal = 16.dp)
@@ -284,20 +286,28 @@ private fun commitVisibleLine(
     vm.manualJump(lineIndex * WORDS_PER_LINE)
 }
 
+/**
+ * Span style for spoken words: white with underline.
+ * Unspoken words are white without underline.
+ */
+private val SpokenStyle = SpanStyle(
+    color = Color.White,
+    textDecoration = TextDecoration.Underline
+)
+
 private fun lineAnnotated(
     line: List<String>,
     baseIndex: Int,
     highlight: Int,
     spoken: Color,
-    dim: Color,
 ): AnnotatedString = buildAnnotatedString {
     line.forEachIndexed { i, word ->
         val spokenWord = baseIndex + i < highlight
-        withStyle(SpanStyle(color = if (spokenWord) spoken else dim)) {
+        withStyle(if (spokenWord) SpokenStyle else SpanStyle(color = Color.White)) {
             append(word)
         }
         if (i < line.size - 1) {
-            withStyle(SpanStyle(color = dim)) { append(" ") }
+            withStyle(SpanStyle(color = Color.White)) { append(" ") }
         }
     }
 }
