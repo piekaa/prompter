@@ -28,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,12 +56,26 @@ import pl.piekoszek.prompter.core.Normalizer
 private const val WORDS_PER_LINE = 10
 
 /**
+ * Velocity-based auto-scroll: the last read word is carried back up to the
+ * "reading line". Speed ramps linearly with the word's height in the
+ * viewport — 0% at [SCROLL_STOP_PCT], 100% at [SCROLL_FULL_PCT] — so the
+ * scroll stops by itself when the word reaches the reading line.
+ */
+private const val SCROLL_STOP_PCT = 20f
+private const val SCROLL_FULL_PCT = 80f
+/** Max speed (100%): fraction of viewport height per second. */
+private const val SCROLL_MAX_VIEWPORT_PER_SEC = 0.3f
+
+/**
  * Screen 2 (PROJEKT 6): full-screen teleprompter.
  *
  * - Text split into lines of [WORDS_PER_LINE] words; each line keeps a
  *   minimum fixed height so scroll math is stable (long lines may wrap).
- * - Auto mode: on every committed position change, center the current line —
- *   `animateScrollToItem(line)` + `scrollBy(viewport/2 - lineH/2)`.
+ * - Auto mode: continuous velocity-based scroll — a frame-locked loop calls
+ *   `scrollBy(speed · dt)` where speed is 0 when the last read word is at
+ *   20% viewport height, full at 80%, linear in between. The word is thus
+ *   carried up to the 20% reading line and the scroll stops by itself
+ *   (no target, no animation, no jitter). Paused while a finger is down.
  * - Spoken words (index < position) are full white; unspoken words are dimmed
  *   white. With "follow partial" enabled the highlight uses the tentative
  *   position.
@@ -105,50 +120,69 @@ fun PrompterScreen(
     val lazyState = rememberLazyListState()
 
     /**
-     * Debug: vertical position of the last read word (words[highlight-1]) as
-     * a % of the visible viewport height — 0% = top, 100% = bottom.
-     * Approximation: uses the line's center, so in a wrapped line it is the
-     * middle of the line, not the exact word row.
+     * Debug + scroll control: last read word (words[highlight-1]) and its
+     * vertical position as a % of the visible viewport height
+     * (0% = top, 100% = bottom, null = off-screen). Approximation: uses the
+     * line's center, so in a wrapped line it is the middle of the line, not
+     * the exact word row.
+     *
+     * Keep the State object — the scroll loop below reads it per frame so it
+     * sees live values (capturing the `.value` local would be stale).
      */
-    val lastWordDebug = remember(lazyState, words) {
+    val lastWordDebugState = remember(lazyState, words) {
         derivedStateOf {
             val h = state.session.highlight
             if (h <= 0) {
                 null
             } else {
-                val idx = h - 1
-                if (idx >= words.size) {
-                    null
+                val idx = (h - 1).coerceAtMost(words.size - 1)
+                val lineIdx = idx / WORDS_PER_LINE
+                val info = lazyState.layoutInfo
+                val item = info.visibleItemsInfo.firstOrNull { it.index == lineIdx }
+                val vp = info.viewportSize.height
+                val percent = if (item != null && vp > 0) {
+                    val center = (item.offset - info.viewportStartOffset) + item.size.toFloat() / 2f
+                    center / vp * 100f
                 } else {
-                    val lineIdx = idx / WORDS_PER_LINE
-                    val info = lazyState.layoutInfo
-                    val item = info.visibleItemsInfo.firstOrNull { it.index == lineIdx }
-                    val vp = info.viewportSize.height
-                    val percent = if (item != null && vp > 0) {
-                        val center = (item.offset - info.viewportStartOffset) + item.size.toFloat() / 2f
-                        (center / vp * 100f).roundToInt()
-                    } else {
-                        null
-                    }
-                    words[idx] to percent
+                    null
                 }
+                LastWordDebug(words[idx], percent)
             }
         }
-    }.value
+    }
+    val lastWordDebug = lastWordDebugState.value
 
     // Top padding = 2 line-heights → reading line appears ~2 lines down from
     // visible area edge regardless of screen/orientation/font.
     val topPaddingDp = (lineMinHeight * 2).coerceAtLeast(16.dp)
     val topPaddingPx = with(density) { topPaddingDp.toPx().toInt() }
 
-    LaunchedEffect(session.position, session.previewPosition, session.status, session.highlight) {
-        if (!touching && viewportPx > 0 && lines.isNotEmpty()) {
-            // Scroll to tentative preview position (always follows partial)
-            val target = session.previewPosition
-            val targetLine = (target / WORDS_PER_LINE).coerceIn(0, lines.size - 1)
-            // Only scroll if target line changed to avoid jitter
-            if (lazyState.firstVisibleItemIndex != targetLine) {
-                lazyState.animateScrollToItem(targetLine)
+    // Velocity-based auto-scroll (replaces the old animateScrollToItem):
+    // each frame, speed = f(word height) — 0 at 20%, full at 80%, linear in
+    // between, clamped outside. The word is thus carried up to the 20%
+    // reading line and the scroll stops by itself. Paused while a finger is
+    // down so it never fights the drag. dt is clamped so a long frame gap
+    // (e.g. app resume) never teleports the list.
+    LaunchedEffect(lazyState, words) {
+        var lastFrameNanos: Long? = null
+        while (true) {
+            var now = 0L
+            withFrameNanos { now = it }
+            val prev = lastFrameNanos
+            lastFrameNanos = now
+            if (prev != null && !touching) {
+                val dtSec = ((now - prev) / 1_000_000_000f).coerceAtMost(0.1f)
+                val pct = lastWordDebugState.value?.percent
+                if (pct != null) {
+                    val t = ((pct - SCROLL_STOP_PCT) / (SCROLL_FULL_PCT - SCROLL_STOP_PCT)).coerceIn(0f, 1f)
+                    if (t > 0f) {
+                        val vpH = lazyState.layoutInfo.viewportSize.height
+                        if (vpH > 0) {
+                            val delta = SCROLL_MAX_VIEWPORT_PER_SEC * vpH.toFloat() * t * dtSec
+                            lazyState.scroll { scrollBy(delta) }
+                        }
+                    }
+                }
             }
         }
     }
@@ -300,8 +334,9 @@ fun PrompterScreen(
         // Debug overlay (top-right): last read word + its position in % of
         // screen height (0% top … 100% bottom).
         lastWordDebug?.let { (word, percent) ->
+            val pct = percent?.roundToInt()
             Text(
-                text = "dbg: «$word» ${percent?.let { "$it%" } ?: "offscreen"}",
+                text = "dbg: «$word» ${if (pct != null) "$pct%" else "offscreen"}",
                 color = Color(0xFFFFE082),
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier
@@ -361,6 +396,9 @@ private fun lineAnnotated(
         }
     }
 }
+
+/** Last read word + its height position in % of the viewport (null = off-screen). */
+private data class LastWordDebug(val word: String, val percent: Float?)
 
 private fun statusText(status: AsrStatus, message: String?): String = when (status) {
     AsrStatus.IDLE -> "Gotowy"

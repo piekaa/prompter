@@ -211,7 +211,10 @@ start od 5.2 (słowa) — więcej danych, więcej kontroli.
 Zasady:
 - przewijanie tylko na **final result** (stabilne) + delikatny „podgląd" na partial
   (opcja),
-- animacja przewinięcia: easing ~300 ms, nigdy skok > 2 linii bez powodu,
+- przewijanie ciągłe (velocity-based): prędkość zależy od pozycji pionowej
+  ostatniego przeczytanego słowa — 0% przy 20% wysokości viewportu, 100% przy
+  80%, liniowo między; słowo jest „niosione" do linii odczytu i przewijanie
+  samo się zatrzymuje; pauza podczas dotyku,
 - manual override: drag przewija i resetuje alignment do widocznej linii;
   auto-follow zostaje włączone — kolejne wypowiedziane słowo przewija dalej,
 - status ASR widoczny: „słucham…" / „pauza" / błąd (np. brak zezwolenia mikrofonu).
