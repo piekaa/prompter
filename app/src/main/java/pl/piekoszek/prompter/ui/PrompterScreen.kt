@@ -58,13 +58,12 @@ private const val WORDS_PER_LINE = 10
 /**
  * Velocity-based auto-scroll: the last read word is carried back up to the
  * "reading line". Speed ramps linearly with the word's height in the
- * viewport — 0% at [SCROLL_STOP_PCT], 100% at [SCROLL_FULL_PCT] — so the
- * scroll stops by itself when the word reaches the reading line.
+ * viewport — 0% at [SCROLL_STOP_PCT], 100% at [SCROLL_FULL_PCT] (max speed
+ * = settings.maxScrollSpeed, configurable) — so the scroll stops by itself
+ * when the word reaches the reading line.
  */
 private const val SCROLL_STOP_PCT = 20f
 private const val SCROLL_FULL_PCT = 80f
-/** Max speed (100%): fraction of viewport height per second. */
-private const val SCROLL_MAX_VIEWPORT_PER_SEC = 0.3f
 
 /**
  * Screen 2 (PROJEKT 6): full-screen teleprompter.
@@ -178,7 +177,8 @@ fun PrompterScreen(
                     if (t > 0f) {
                         val vpH = lazyState.layoutInfo.viewportSize.height
                         if (vpH > 0) {
-                            val delta = SCROLL_MAX_VIEWPORT_PER_SEC * vpH.toFloat() * t * dtSec
+                            // Live read: setting changes apply mid-scroll.
+                            val delta = state.settings.maxScrollSpeed * vpH.toFloat() * t * dtSec
                             lazyState.scroll { scrollBy(delta) }
                         }
                     }

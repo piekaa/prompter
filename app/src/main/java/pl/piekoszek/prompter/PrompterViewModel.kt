@@ -30,6 +30,8 @@ data class Settings(
     val confThreshold: Float = 0.5f,
     /** Hysteresis factor (forward moves): margin = factor · W. */
     val margin: Float = 0.15f,
+    /** Max auto-scroll speed: fraction of viewport height per second. */
+    val maxScrollSpeed: Float = PrompterViewModel.DEFAULT_SCROLL_SPEED,
 )
 
 data class SessionState(
@@ -243,6 +245,12 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         rebuildAlignment()
     }
 
+    fun setMaxScrollSpeed(value: Float) {
+        setSettings {
+            it.copy(maxScrollSpeed = value.coerceIn(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED))
+        }
+    }
+
     /** Applies a settings change + persists (no-op if unchanged). */
     private fun setSettings(transform: (Settings) -> Settings) {
         val cur = _state.value
@@ -360,6 +368,9 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
                     darkBackground = j.optBoolean("darkBackground", true),
                     confThreshold = j.optDouble("confThreshold", 0.5).toFloat(),
                     margin = j.optDouble("margin", 0.15).toFloat(),
+                    maxScrollSpeed = j.optDouble(
+                        "maxScrollSpeed", DEFAULT_SCROLL_SPEED.toDouble()
+                    ).toFloat(),
                 )
             }.getOrDefault(Settings())
         } else {
@@ -377,6 +388,7 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
                     .put("darkBackground", s.darkBackground)
                     .put("confThreshold", s.confThreshold.toDouble())
                     .put("margin", s.margin.toDouble())
+                    .put("maxScrollSpeed", s.maxScrollSpeed.toDouble())
                     .toString()
             )
         }
@@ -390,6 +402,10 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         const val MIN_FONT_SP = 72
         const val MAX_FONT_SP = 144
+        /** Auto-scroll max speed range: viewport height fractions per second. */
+        const val MIN_SCROLL_SPEED = 0.1f
+        const val MAX_SCROLL_SPEED = 1f
+        const val DEFAULT_SCROLL_SPEED = 0.3f
         private const val SETTINGS_FILE = "settings.json"
         /** WHITESPACE regex for splitting text into words. */
         private val WHITESPACE = Regex("\\s+")

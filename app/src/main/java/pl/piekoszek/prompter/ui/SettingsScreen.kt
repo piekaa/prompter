@@ -97,6 +97,21 @@ fun SettingsScreen(
                 onValueChange = { vm.setMargin(it) },
                 valueRange = 0.05f..0.5f,
             )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                "Prędkość przewijania: ${"%.2f".format(s.maxScrollSpeed)} ekran/s",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                "Maksymalna prędkość auto-przewijania: frakcja wysokości ekranu na sekundę (1 = cały ekran w 1 s).",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Slider(
+                value = s.maxScrollSpeed,
+                onValueChange = { vm.setMaxScrollSpeed(it) },
+                valueRange = PrompterViewModel.MIN_SCROLL_SPEED..PrompterViewModel.MAX_SCROLL_SPEED,
+            )
         }
     }
 }
