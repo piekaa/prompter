@@ -245,4 +245,50 @@ class AlignmentEngineTest {
         assertTrue("preview must not jump far on weak evidence: $preview", preview <= 12)
         assertEquals("preview must not commit", 6, engine.position())
     }
+
+    /**
+     * Catch-up (user report: ASR missed a chunk, speaker read much further —
+     * the engine no longer caught up). The speaker has read past the first
+     * 6 words and is now on the last 5 words (a strong 5-word match ~26 words
+     * ahead). A multi-word match is decisive evidence of position, so the
+     * engine must jump there even though it is far — the weak/far case above
+     * stays blocked, this strong/far case must commit.
+     */
+    @Test
+    fun `strong phrase match ahead catches up after missed chunk`() {
+        val engine = AlignmentEngine()
+        engine.setTarget(target)
+        // speaker reads the first 6 words
+        feed(engine, *target.subList(0, 6).toTypedArray())
+        assertEquals(6L, engine.position().toLong())
+        // ASR missed the middle chunk; the speaker is now on the last 5 words.
+        // (The VM replaces the transcript with the new partial.)
+        engine.updateForPartial(target.subList(27, 32).map { TranscriptWord(it) })
+        assertEquals(
+            "strong 5-word match ahead must commit despite distance: pos=${engine.position()}",
+            32L, engine.position().toLong(),
+        )
+    }
+
+    /**
+     * Contrast guard: a strong match far ahead commits, but a weak match far
+     * ahead (only 2 words) must not — even though both are the same distance
+     * from the current position. This is the line between legitimate catch-up
+     * and a coincidental far jump.
+     */
+    @Test
+    fun `weak match far ahead does not commit even at same distance`() {
+        val engine = AlignmentEngine()
+        // P(6) + 21 fillers + 2-word tail (target[30]=stu, target[31]=vwx)
+        engine.setTarget(target)
+        feed(engine, *target.subList(0, 6).toTypedArray())
+        assertEquals(6L, engine.position().toLong())
+        // speaker (per ASR) only produces 2 words that match the far tail;
+        // not enough evidence to jump ~25 words.
+        engine.updateForPartial(listOf(TranscriptWord("stu"), TranscriptWord("vwx")))
+        assertTrue(
+            "weak 2-word match must not commit a ~25-word jump: pos=${engine.position()}",
+            engine.position() <= 12,
+        )
+    }
 }

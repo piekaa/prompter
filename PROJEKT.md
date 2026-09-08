@@ -175,15 +175,23 @@ sim(a,b)  = 1.0  jeśli a == b
           = 0.0  jeśli a == [unk] (albo conf < próg)
 ```
 
-- Szukaj optimum **lokalnie**: w oknie `p_prev ± K` (K≈40) — wystarczająco na tempo
-  mówienia (~2-3 słowa/s) i tanio (K·W operacji per update).
-- **Hysteresis / anti-jitter**: zmień `p` tylko jeśli `score(i*) > score(p_prev) + margin`,
-  gdzie **margin = 0.15·(W + dystans)**, dystans = `i* − p_prev`. Marginal rośnie z
-  dystansem — kilka słów dowodu nie może "udowodnić" dużego skoku do powtórzonej
-  lub podobnej (in fleksji) frazy dalej w tekście (stary płaski 0.15·W pozwalał,
-  że 1–2 wypowiedziane słowa podświetlały ~20 słów tekstu). Pozycja porusza się
-  tylko w przód. `preview()` stosuje ten sam warunek (nie może być bez marginesu).
-- Monotonic bias: lekki bonus za `i ≥ p_prev` (mówienie płynie do przodu).
+- Szukaj optimum **lokalnie**: w oknie `p_prev .. p_prev + K` (K=80) — wystarczająco
+  na tempo mówienia i na dołapanie się, gdy ASR przestawi kawałek; tanio (K·W operacji).
+- **Anti-jitter + catch-up** (reguła siły dowodu, nie dystansu): kandydat `i`
+  akceptowany tylko jeśli `score(i) > score(p_prev) + 0.15·W` **ORAZ**:
+    · **silny dopas** — ≥ 4 słowa okna to realne dopasowanie (dokładne / po
+      de-diakrytyzacji) → może być nawet `K` słów dalej. To jest **catch-up**:
+      gdy mówisz dalej niż ASR nadąża (lub ASR pominie kawałek), wielosłowne
+      dopasowanie jest zdecydowanym dowodem, gdzie aktualnie jesteś;
+    · **bliski** — w promieniu 12 słów od bieżącej pozycji (zwykłe śledzenie).
+  Słabe dopasowanie (kilka słów) jest więc ograniczone dystansem — 1–2 słowa
+  przypadkowe nie mogą "dowieść" dużego skoku do powtórzonej/podobnej frazy dalej
+  w tekście (stary płaski margines pozwalał, że 1–2 słowa podświetlały ~20; a
+  marginal rosnący z dystansem zablokowałby też poprawne catch-up — stąd decyduje
+  **siła** dopasowania, nie dystans).
+- Wśród dopuszczalnych kandydatów wygrywa najwyższy `score`; przy remisie bliższa
+  pozycja (powtórzona fraza → najbliższe wystąpienie).
+- Pozycja porusza się **tylko w przód**. `preview()` stosuje ten sam warunek.
 - `p` → % tekstu → offset przewinięcia.
 
 ### 5.3 Opcja B: grammar = okna fraz (mapping 1:1)
