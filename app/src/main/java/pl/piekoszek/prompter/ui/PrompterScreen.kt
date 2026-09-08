@@ -154,8 +154,6 @@ fun PrompterScreen(
     val lineMinHeight = remember(fontSizeSp) { (fontSizeSp * 1.8f).dp }
     var viewportPx by remember { mutableIntStateOf(0) }
     var touching by remember { mutableStateOf(false) }
-    /** (firstVisibleItemIndex, scrollOffset) when the current touch started. */
-    var touchStart by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     val lazyState = rememberLazyListState()
 
     /**
@@ -262,37 +260,54 @@ fun PrompterScreen(
                 modifier = Modifier
                     .weight(1f)
                     .pointerInput(lazyState) {
-                        // Observe touch down/up on the text area without
+                        // Observe press/release on the text area without
                         // consuming events (the list still scrolls natively).
                         // Press pauses auto-scroll; release commits the
                         // visible line ONLY if the list actually moved (a
                         // real drag), so alignment re-anchors where the user
                         // left it and the next word spoken scrolls again.
-                        // A bare tap commits nothing; cancel just unpauses.
+                        // A bare tap commits nothing.
+                        //
+                        // Cancellation-safe (ui-android 1.10.x): a gesture
+                        // cancelled by the system (notification shade, app
+                        // switch, finger slipping off the sensor) may never
+                        // deliver a Release — in this API that arrives as
+                        // coroutine cancellation of the await loop. `touching`
+                        // is therefore cleared on every Release, restarted on
+                        // every Press (a new gesture means the previous one is
+                        // over, whatever happened to it), and in `finally` if
+                        // this coroutine is cancelled — so auto-scroll can
+                        // never be stuck off. Cancels never commit a jump.
                         awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                when (event.type) {
-                                    PointerEventType.Press -> {
-                                        touching = true
-                                        val idx = lazyState.firstVisibleItemIndex
-                                        val off = lazyState.firstVisibleItemScrollOffset
-                                        touchStart = idx to off
-                                    }
-                                    PointerEventType.Release -> {
-                                        if (touching) {
-                                            touching = false
-                                            val start = touchStart
-                                            touchStart = null
-                                            val idx = lazyState.firstVisibleItemIndex
-                                            val off = lazyState.firstVisibleItemScrollOffset
-                                            if (start != null && start != (idx to off)) {
-                                                commitVisibleLine(lazyState, viewportPx, rows, vm)
+                            var start: Pair<Int, Int>? = null
+                            try {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    when {
+                                        event.type == PointerEventType.Press -> {
+                                            touching = true
+                                            start = lazyState.firstVisibleItemIndex to
+                                                lazyState.firstVisibleItemScrollOffset
+                                        }
+                                        event.type == PointerEventType.Release -> {
+                                            if (touching) {
+                                                touching = false
+                                                val s = start
+                                                start = null
+                                                if (s != null) {
+                                                    val end = lazyState.firstVisibleItemIndex to
+                                                        lazyState.firstVisibleItemScrollOffset
+                                                    if (s != end) {
+                                                        commitVisibleLine(lazyState, viewportPx, rows, vm)
+                                                    }
+                                                }
                                             }
                                         }
+                                        else -> Unit // Move / Enter / Exit / Scroll
                                     }
-                                    PointerEventType.Move -> Unit
                                 }
+                            } finally {
+                                touching = false
                             }
                         }
                     }
