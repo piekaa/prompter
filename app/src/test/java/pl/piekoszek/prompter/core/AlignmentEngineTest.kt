@@ -185,4 +185,64 @@ class AlignmentEngineTest {
         engine.updateFinal(emptyList())
         assertEquals(0L, engine.position().toLong())
     }
+
+    /**
+     * Regression (user report: a few spoken words highlighting ~20 words,
+     * around 1/4 of a 2336-word script): the speaker says "domu lasu" and
+     * ASR drops the inflections ("dom las"). The exact forms "dom las"
+     * appear 20 words AHEAD in the text, so with a flat hysteresis margin
+     * the later occurrence wins the scan (2.0 > 0.6 + 0.9) and ~20 unspoken
+     * words commit at once. The distance-scaled margin must keep the
+     * position local.
+     */
+    @Test
+    fun `exact phrase 20 words ahead does not jump past fuzzy local match`() {
+        val engine = AlignmentEngine()
+        val fillers = listOf(
+            "okno", "drzwi", "chleb", "sól", "ogień", "woda", "niebo", "ziemia",
+            "kolej", "list", "nuta", "pasek", "radość", "skok", "taca",
+            "uniesienie", "wzrok", "zgoda",
+        )
+        // 6 + 2 (fuzzy spot) + 18 fillers + 2 (exact spot, 20 ahead) + 2
+        val t = listOf("kot", "dom", "las", "ryba", "jabłko", "stół") +
+            listOf("domu", "lasu") + fillers + listOf("dom", "las", "mno", "pqr")
+        engine.setTarget(t)
+        feed(engine, "kot", "dom", "las", "ryba", "jabłko", "stół")
+        assertEquals(6L, engine.position().toLong())
+        // Fresh endpoint after a silence (VM replaces the transcript with the
+        // new partial): speaker said "domu lasu" at the CURRENT spot, ASR
+        // gave "dom las". The exact "dom las" sits 20 words ahead.
+        engine.updateForPartial(listOf(TranscriptWord("dom"), TranscriptWord("las")))
+        assertTrue(
+            "must not jump to the exact phrase 20 words ahead: pos=${engine.position()}",
+            engine.position() <= 12,
+        )
+    }
+
+    /** A bulk feed larger than one score window still catches up fully. */
+    @Test
+    fun `bulk feed catches up fully`() {
+        val engine = AlignmentEngine()
+        engine.setTarget(target)
+        feed(engine, *target.subList(0, 16).toTypedArray())
+        assertEquals(16L, engine.position().toLong())
+        feed(engine, *target.subList(16, 32).toTypedArray())
+        assertEquals(32L, engine.position().toLong())
+    }
+
+    /**
+     * Preview was the most permissive path: best score wins, no margin,
+     * full 40-word radius — a 2-word partial matching a word near the end
+     * previewed a +26 jump. Now distance-margin-checked like the commit.
+     */
+    @Test
+    fun `preview with weak partial does not jump far ahead`() {
+        val engine = AlignmentEngine()
+        engine.setTarget(target)
+        feed(engine, "kot", "dom", "las", "ryba", "jabłko", "stół")
+        assertEquals(6L, engine.position().toLong())
+        val preview = engine.preview(listOf(TranscriptWord("qzxw"), TranscriptWord("vwx")))
+        assertTrue("preview must not jump far on weak evidence: $preview", preview <= 12)
+        assertEquals("preview must not commit", 6, engine.position())
+    }
 }

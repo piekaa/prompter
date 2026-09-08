@@ -28,7 +28,7 @@ data class Settings(
     val darkBackground: Boolean = true,
     /** Words below this confidence contribute nothing to alignment. */
     val confThreshold: Float = 0.5f,
-    /** Hysteresis factor (forward moves): margin = factor · W. */
+    /** Hysteresis factor (forward moves): margin = factor · (W + distance). */
     val margin: Float = 0.15f,
     /** Max auto-scroll speed: fraction of viewport height per second. */
     val maxScrollSpeed: Float = PrompterViewModel.DEFAULT_SCROLL_SPEED,

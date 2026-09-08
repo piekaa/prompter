@@ -177,8 +177,12 @@ sim(a,b)  = 1.0  jeśli a == b
 
 - Szukaj optimum **lokalnie**: w oknie `p_prev ± K` (K≈40) — wystarczająco na tempo
   mówienia (~2-3 słowa/s) i tanio (K·W operacji per update).
-- **Hysteresis / anti-jitter**: zmień `p` tylko jeśli `score(i*) > score(p_prev) + margin`
-  (np. margin = 0.15·W). Pozycja porusza się tylko w przód.
+- **Hysteresis / anti-jitter**: zmień `p` tylko jeśli `score(i*) > score(p_prev) + margin`,
+  gdzie **margin = 0.15·(W + dystans)**, dystans = `i* − p_prev`. Marginal rośnie z
+  dystansem — kilka słów dowodu nie może "udowodnić" dużego skoku do powtórzonej
+  lub podobnej (in fleksji) frazy dalej w tekście (stary płaski 0.15·W pozwalał,
+  że 1–2 wypowiedziane słowa podświetlały ~20 słów tekstu). Pozycja porusza się
+  tylko w przód. `preview()` stosuje ten sam warunek (nie może być bez marginesu).
 - Monotonic bias: lekki bonus za `i ≥ p_prev` (mówienie płynie do przodu).
 - `p` → % tekstu → offset przewinięcia.
 

@@ -10,10 +10,16 @@ package pl.piekoszek.prompter.core
  *  - `position` p ∈ [0, n] — number of target words considered spoken.
  *  - For a candidate p=i we score the last W transcript words against
  *    target[i-W+1 .. i]:  score(i) = Σ sim(s[j], t[...]).
- *  - Candidate search is local: p_prev ± searchRadius (cheap, matches speech rate).
+ *  - Candidate search is local: p_prev .. p_prev + searchRadius (cheap,
+ *    matches speech rate).
  *  - Position only moves forward (monotonic alignment).
- *  - Hysteresis: move only if the best score beats the current position's score
- *    by margin = factor · W.
+ *  - Hysteresis: move only if the best score beats the current position's
+ *    score by margin = factor·(W + distance). The distance term is the
+ *    anti-jump limit: the score window is only W words wide, so with a flat
+ *    margin a few words of evidence could "prove" a 40-word jump whenever
+ *    the text repeats a phrase (or similar inflected forms) ahead. Each word
+ *    of distance must earn its own evidence (observed bug: 1-2 spoken words
+ *    highlighting ~20 target words).
  *  - Forward bias: small bonus for i ≥ p_prev (speech flows forward).
  */
 class AlignmentEngine(
@@ -23,9 +29,9 @@ class AlignmentEngine(
     data class AlignmentConfig(
         /** Words compared per score (W). */
         val windowSize: Int = 6,
-        /** Local search radius around current position (words). */
+        /** Local forward search radius (words). */
         val searchRadius: Int = 40,
-        /** Margin factor: move when best > current + factor·W. */
+        /** Margin factor: move when best > current + factor·(W + distance). */
         val forwardMargin: Double = 0.15,
         /** Words with conf below this contribute nothing to the score. */
         val confThreshold: Double = 0.5,
@@ -79,12 +85,18 @@ class AlignmentEngine(
         transcript = if (words.size > MAX_TRANSCRIPT_WORDS)
             words.takeLast(MAX_TRANSCRIPT_WORDS) else words
 
-        // Find best position using hysteresis (forward-only with margin)
-        val (best, bestScore) = bestPositionForward(transcript, position)
-        val prevScore = scoreAt(position, transcript)
-        val margin = config.forwardMargin * windowOf(best)
-        val moved = best != position && bestScore > prevScore + margin
-        if (moved) position = best
+        // Find best position using hysteresis (forward-only). The margin
+        // grows with the candidate's distance, so a far candidate needs
+        // proportionally more evidence — a few matching words cannot commit
+        // a large jump to a repeated/similar phrase ahead.
+        val hi = (position + config.searchRadius).coerceAtMost(target.size)
+        if (hi > position) {
+            val (best, bestScore) = bestPositionForward(transcript, position, hi)
+            val prevScore = scoreAt(position, transcript)
+            if (best != position && bestScore > prevScore + marginFor(position, best)) {
+                position = best
+            }
+        }
 
         return position
     }
@@ -106,7 +118,15 @@ class AlignmentEngine(
      */
     fun preview(partialWords: List<TranscriptWord>): Int {
         if (partialWords.isEmpty() || target.isEmpty()) return position
-        return bestPositionForward(transcript + partialWords, position).first
+        val words = transcript + partialWords
+        val hi = (position + config.searchRadius).coerceAtMost(target.size)
+        if (hi <= position) return position
+        val (best, bestScore) = bestPositionForward(words, position, hi)
+        if (best == position) return position
+        // Same hysteresis as updateForPartial — a preview jump must be
+        // evidence-backed too (a bare best-score pick jumps on noise).
+        val prevScore = scoreAt(position, words)
+        return if (bestScore > prevScore + marginFor(position, best)) best else position
     }
 
     /**
@@ -127,6 +147,14 @@ class AlignmentEngine(
 
     private fun windowOf(i: Int): Int = if (i <= 0) 0 else minOf(config.windowSize, i)
 
+    /**
+     * Hysteresis margin for moving from [from] to [to] (to > from):
+     * factor·(W + distance) — each word of distance must earn as much
+     * evidence as one window word.
+     */
+    private fun marginFor(from: Int, to: Int): Double =
+        config.forwardMargin * (config.windowSize + (to - from))
+
     private fun scoreAt(i: Int, words: List<TranscriptWord>): Double {
         if (i <= 0 || words.isEmpty() || target.isEmpty()) return 0.0
         val w = minOf(windowOf(i), words.size)
@@ -141,13 +169,16 @@ class AlignmentEngine(
         return sum
     }
 
-    private fun bestPositionForward(words: List<TranscriptWord>, from: Int): Pair<Int, Double> {
-        // Only search forward from current position (position only moves forward).
-        val hi = (from + config.searchRadius).coerceAtMost(target.size)
+    private fun bestPositionForward(
+        words: List<TranscriptWord>,
+        from: Int,
+        hi: Int,
+    ): Pair<Int, Double> {
+        // Only search forward from current position (position only moves
+        // forward); [hi] is the caller-capped upper bound (search radius).
         var bestI = from.coerceIn(0, target.size)
         var bestS = scoreAt(bestI, words)
-        for (i in from..hi) {
-            if (i == bestI) continue
+        for (i in (from + 1)..hi) {
             var s = scoreAt(i, words)
             s += config.forwardBias * windowOf(i)
             if (s > bestS) {
