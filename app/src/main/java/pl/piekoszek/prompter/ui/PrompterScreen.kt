@@ -55,6 +55,21 @@ import pl.piekoszek.prompter.core.Normalizer
 
 private const val WORDS_PER_LINE = 10
 
+/** Blank line (possibly with spaces/tabs) separating paragraphs. */
+private val BLANK_LINE = Regex("\\n[ \\t]*\\n+")
+
+/**
+ * One item in the prompter list. [Line] holds a chunk of up to
+ * [WORDS_PER_LINE] words; [wordStart] is the index of its first word in the
+ * global word list (alignment coordinates). [Break] marks a blank line of
+ * the original script — rendered as a vertical gap so paragraph structure
+ * stays visible while speaking.
+ */
+private sealed class PromptRow {
+    data class Line(val words: List<String>, val wordStart: Int) : PromptRow()
+    data object Break : PromptRow()
+}
+
 /**
  * Velocity-based auto-scroll: the last read word is carried back up to the
  * "reading line". Speed ramps linearly with the word's height in the
@@ -70,6 +85,8 @@ private const val SCROLL_FULL_PCT = 80f
  *
  * - Text split into lines of [WORDS_PER_LINE] words; each line keeps a
  *   minimum fixed height so scroll math is stable (long lines may wrap).
+ *   Blank lines of the original script survive as [PromptRow.Break] gaps
+ *   between the reflowed lines (paragraph structure preserved).
  * - Auto mode: continuous velocity-based scroll — a frame-locked loop calls
  *   `scrollBy(speed · dt)` where speed is 0 when the last read word is at
  *   20% viewport height, full at 80%, linear in between. The word is thus
@@ -94,9 +111,32 @@ fun PrompterScreen(
     val state by vm.state.collectAsState()
     val script = state.current
     val words = remember(script?.id, script?.text) {
-        script?.text?.let(Normalizer::words) ?: emptyList()
+        // displayWords keeps original casing + punctuation but has the SAME
+        // count/order as Normalizer.words (the alignment token list), so the
+        // highlight index stays aligned.
+        script?.text?.let(Normalizer::displayWords) ?: emptyList()
     }
-    val lines = remember(words) { words.chunked(WORDS_PER_LINE) }
+    // Split on blank lines, then reflow each paragraph into WORDS_PER_LINE-word
+    // rows. Word offsets are global, so highlight/commit indices stay aligned
+    // with the alignment engine. (displayWords tokens never cross a blank
+    // line — they stop at whitespace — so per-paragraph counts sum exactly.)
+    val rows = remember(script?.id, script?.text) {
+        val text = script?.text ?: return@remember emptyList<PromptRow>()
+        val out = mutableListOf<PromptRow>()
+        var sawLine = false
+        var offset = 0
+        text.split(BLANK_LINE).forEach { para ->
+            val chunk = Normalizer.displayWords(para).chunked(WORDS_PER_LINE)
+            if (chunk.isEmpty()) return@forEach
+            if (sawLine) out += PromptRow.Break
+            chunk.forEach { c ->
+                out += PromptRow.Line(c, offset)
+                offset += c.size
+            }
+            sawLine = true
+        }
+        out
+    }
 
     val fontSizeSp = state.settings.fontSizeSp
     val dark = state.settings.darkBackground
@@ -128,16 +168,24 @@ fun PrompterScreen(
      * Keep the State object — the scroll loop below reads it per frame so it
      * sees live values (capturing the `.value` local would be stale).
      */
-    val lastWordDebugState = remember(lazyState, words) {
+    val lastWordDebugState = remember(lazyState, words, rows) {
         derivedStateOf {
             val h = state.session.highlight
             if (h <= 0) {
                 null
             } else {
                 val idx = (h - 1).coerceAtMost(words.size - 1)
-                val lineIdx = idx / WORDS_PER_LINE
+                // Rows include Break spacers, so find the row by word offset
+                // (not by fixed chunk math).
+                val lineIdx = rows.indexOfFirst {
+                    it is PromptRow.Line && it.wordStart <= idx && idx < it.wordStart + it.words.size
+                }
                 val info = lazyState.layoutInfo
-                val item = info.visibleItemsInfo.firstOrNull { it.index == lineIdx }
+                val item = if (lineIdx >= 0) {
+                    info.visibleItemsInfo.firstOrNull { it.index == lineIdx }
+                } else {
+                    null
+                }
                 val vp = info.viewportSize.height
                 val percent = if (item != null && vp > 0) {
                     val center = (item.offset - info.viewportStartOffset) + item.size.toFloat() / 2f
@@ -239,7 +287,7 @@ fun PrompterScreen(
                                             val idx = lazyState.firstVisibleItemIndex
                                             val off = lazyState.firstVisibleItemScrollOffset
                                             if (start != null && start != (idx to off)) {
-                                                commitVisibleLine(lazyState, viewportPx, vm)
+                                                commitVisibleLine(lazyState, viewportPx, rows, vm)
                                             }
                                         }
                                     }
@@ -250,19 +298,26 @@ fun PrompterScreen(
                     }
                     .onSizeChanged { viewportPx = it.height },
             ) {
-                itemsIndexed(lines, key = { index, _ -> index }) { index, line ->
-                    Text(
-                        text = lineAnnotated(line, index * WORDS_PER_LINE, highlight, spokenColor),
-                        fontSize = fontSizeSp.sp,
-                        // Explicit pitch: the theme's LocalTextStyle carries a
-                        // fixed lineHeight (24sp) which would collapse wrapped
-                        // lines into each other at larger font sizes.
-                        lineHeight = (fontSizeSp * 1.3f).sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = lineMinHeight)
-                            .padding(horizontal = 28.dp, vertical = 6.dp),
-                    )
+                itemsIndexed(rows, key = { index, _ -> index }) { _, row ->
+                    when (row) {
+                        is PromptRow.Line -> Text(
+                            text = lineAnnotated(row.words, row.wordStart, highlight, spokenColor),
+                            fontSize = fontSizeSp.sp,
+                            // Explicit pitch: the theme's LocalTextStyle carries a
+                            // fixed lineHeight (24sp) which would collapse wrapped
+                            // lines into each other at larger font sizes.
+                            lineHeight = (fontSizeSp * 1.3f).sp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = lineMinHeight)
+                                .padding(horizontal = 28.dp, vertical = 6.dp),
+                        )
+                        is PromptRow.Break -> Spacer(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height((fontSizeSp * 0.5f).dp),
+                        )
+                    }
                 }
             }
 
@@ -350,12 +405,14 @@ fun PrompterScreen(
 }
 
 /**
- * On touch release: the line whose center is closest to the viewport center
- * becomes the committed position (manual override, PROJEKT 5.4).
+ * On touch release: the text line whose center is closest to the viewport
+ * center becomes the committed position (manual override, PROJEKT 5.4).
+ * Break spacers are skipped — the jump target is the line's first word.
  */
 private fun commitVisibleLine(
     lazyState: LazyListState,
     viewportPx: Int,
+    rows: List<PromptRow>,
     vm: PrompterViewModel,
 ) {
     if (viewportPx <= 0) return
@@ -364,11 +421,13 @@ private fun commitVisibleLine(
     // Item offsets are absolute (from content start); the viewport center is
     // viewportStartOffset + half the visible height.
     val center = info.viewportStartOffset + viewportPx / 2
-    val lineIndex = info.visibleItemsInfo
-        .minByOrNull { kotlin.math.abs(it.offset + it.size / 2 - center) }
-        ?.index
-        ?: lazyState.firstVisibleItemIndex
-    vm.manualJump(lineIndex * WORDS_PER_LINE)
+    val line = info.visibleItemsInfo
+        .map { v -> v to rows.getOrNull(v.index) }
+        .filter { it.second is PromptRow.Line }
+        .minByOrNull { (v, _) -> kotlin.math.abs(v.offset + v.size / 2 - center) }
+        ?.second as? PromptRow.Line
+        ?: return
+    vm.manualJump(line.wordStart)
 }
 
 /**

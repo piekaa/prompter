@@ -14,6 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./gradlew :app:testDebugUnitTest --tests "pl.piekoszek.prompter.core.AlignmentEngineTest"   # single class
 ```
 
+- **Java on Windows (Git Bash):** `JAVA_HOME` is set system-wide to `C:\Users\Piotr\.jdks\corretto-21.0.5` (via `setx`). If a shell still lacks it (process started before the `setx`, e.g. an old Claude session), export it inline in the *same* command: `export JAVA_HOME="$HOME/.jdks/corretto-21.0.5" && ./gradlew :app:testDebugUnitTest`. JDKs live in `C:\Users\Piotr\.jdks\` (corretto-17/21, openjdk-23/25); use corretto-21.0.5 — verified working.
 - All app logic that doesn't need Android lives in `core/` and is tested as plain JUnit — run those tests after any change to alignment/scoring/grammar logic.
 - **Do not install the APK automatically** (no `adb install` / MTP push). The user copies the APK to the phone and installs it manually; the device is usually not attached via adb. Just report the APK path after a build.
 
@@ -24,7 +25,7 @@ Mic → VoskEngine (SpeechService, bg thread) → callbacks on MAIN thread
      → TranscriptBuf (confirmed + partial words)
      → AlignmentEngine (position p = words spoken, hysteresis)
      → PrompterViewModel UiState → Compose scroll/highlight
-     ↘ GrammarBuilder window ±150 words → Recognizer.setGrammar() live reconfig
+     ↘ GrammarBuilder full script words → Recognizer grammar (once at start)
 ```
 
 - `core/` — **pure JVM, zero Android deps** (deliberately; unit-tested with fake transcripts): `AlignmentEngine` (the heart), `GrammarBuilder`, `Normalizer`, `Similarity`, `TranscriptWord`. Keep it Android-free.
@@ -35,17 +36,17 @@ Mic → VoskEngine (SpeechService, bg thread) → callbacks on MAIN thread
 
 ## Invariants that span multiple files (read before changing)
 
-**Position semantics.** `position` p ∈ [0, n] = number of target words *spoken* (not an index). `GrammarBuilder.window` centers on `words[position-1]`; `AlignmentEngine.scoreAt(i)` compares the last W transcript words against `target[i-W+1..i]`; `progress = p / n`.
+**Position semantics.** `position` p ∈ [0, n] = number of target words *spoken* (not an index). `AlignmentEngine.scoreAt(i)` compares the last W transcript words against `target[i-W+1..i]`; `progress = p / n`.
 
 **Commit vs preview.** Only `onFinal` (endpointer silence) commits a position via `alignment.updateFinal()` — partials never commit; they only feed `alignment.preview()` for a soft UI hint when `settings.followPartial` is on. `fedCount` in the VM tracks how many confirmed words were already fed (append-only), so words are never re-fed after a manual jump clears the transcript.
 
-**Threading (verified against the AAR bytecode, see VoskEngine.kt header).** `SpeechService` posts all recognition callbacks on the **main** thread — safe to touch UI state directly, no extra synchronization. `speech.stop()` **blocks** (joins the recognizer thread) and `setGrammar` must not race the audio loop — both run on the engine's single-thread `vosk-io` executor, which also serializes start/stop/setGrammar. State flags are `@Volatile`.
+**Threading (verified against the AAR bytecode, see VoskEngine.kt header).** `SpeechService` posts all recognition callbacks on the **main** thread — safe to touch UI state directly, no extra synchronization. `speech.stop()` **blocks** (joins the recognizer thread) — both run on the engine's single-thread `vosk-io` executor, which also serializes start/stop/reset. State flags are `@Volatile`.
 
-**Grammar windowing.** The recognizer vocabulary is a live-swapped window of ±150 words around the current position (`setGrammar`), not the whole script — swapped when `|pos - grammarCenter| > radius/2`. Grammar is a JSON array of words + a single `"[unk]"`; words outside the vocabulary land in `[unk]` and score 0.
+**Grammar vocabulary.** The recognizer vocabulary is the **whole script** — all unique words + a single `"[unk]"` — applied once at session start, never swapped live (deliberate choice; no `setGrammar` mid-session). The `Recognizer` is reused across sessions, so `VoskEngine.start()` re-applies the current script's grammar each time. Words outside the vocabulary land in `[unk]` and score 0.
 
 **Anti-jitter.** Position only moves forward (monotonic). The best local score must beat the current position's score by a forward margin of 0.15·W, plus a small forward bias. Similarity tiers: exact = 1.0, diacritic-fold match = 0.5, fuzzy (Levenshtein) capped at 0.3, ratio ≥ 0.5 → 0. Don't raise the fuzzy cap or loosen the margin casually — that's what keeps `p` from jittering on a ~12–18% WER Polish model.
 
-**Manual override.** `manualJump(pos)` = commit position + clear alignment transcript + `engine.reset()` (discard in-flight partial) + refresh grammar window. Any new "jump" feature must do all four, or alignment resumes from stale state.
+**Manual override.** `manualJump(pos)` = commit position + clear alignment transcript + `engine.reset()` (discard in-flight partial). Any new "jump" feature must do all three, or alignment resumes from stale state.
 
 ## Quirks
 

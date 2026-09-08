@@ -124,11 +124,11 @@ Dystrybucja w APK — dwie drogi:
 │ (Android   │                │  + Recognizer│   (main thread)     │  (potwierdzone│
 │  AudioRec) │                │  (Vosk, bg)  │                     │   słowa + conf)│
 └────────────┘                └──────────────┘                     └──────┬────────┘
-                                  ▲  setGrammar(window)                  ▼
+                                  ▲  grammar (pełny tekst)             ▼
                                   │                            ┌───────────────────┐
                             ┌─────┴───────────────────────┐     │  AlignmentEngine │
                             │  GrammarBuilder             │◀────│  pozycja w tekście│
-                            │  słowa/frazy z okna tekstu  │     │  (DP + hysteresis)│
+                            │  słowa/frazy z całego tekstu│     │  (DP + hysteresis)│
                             └─────────────────────────────┘     └───────┬───────────┘
                                                                         ▼
                                                           ┌──────────────────────────┐
@@ -140,9 +140,9 @@ Dystrybucja w APK — dwie drogi:
 
 Komponenty (Kotlin):
 - `VoskEngine` — wrapper nad `Model`/`Recognizer`/`SpeechService`; init, start/stop,
-  pauza, podmiana grammar; wystawia `Flow<Partial>` / `Flow<Final>`.
-- `GrammarBuilder` — tekst → lista fraz (słowa) + `[unk]`; okienkowanie wokół
-  bieżącej pozycji (np. ±150 słów) żeby grammar nie był ogromny.
+  pauza; wystawia `Flow<Partial>` / `Flow<Final>`.
+- `GrammarBuilder` — tekst → lista fraz (słowa) + `[unk]`; cały słownik tekstu
+  wczytany raz na start sesji (bez podmiany w locie).
 - `AlignmentEngine` — czysta, testowalna logika: `(targetText, transcript) → position`.
   Zero zależności od Androida → testy jednostkowe z fikcyjnymi transcriptami.
 - `ScrollController` — pozycja → offset przewinięcia + easing; tryb follow/manual.
@@ -235,7 +235,7 @@ Szacowany koszt M1: 1-2 sesje (bindingi proste, model 50 MB do assetsa).
 | Ryzyko | Wpływ | Mitygacja |
 |---|---|---|
 | WER PL small model 12-18% | pozycja „skacze" | grammar (słownik z tekstu) tnący błędy; scoring tolerancyjny; hysteresis |
-| Duży grammar (tysiące słów) = wolne `new_grm` | opóźnienie startu / podmiany | okienkowanie ±150 słów przez `setGrammar()` w locie |
+| Duży grammar (tysiące słów) = wolne `new_grm` | jednorazowe opóźnienie startu sesji | pełny grammar raz na start (celowo, bez okienkowania); brak podmian w locie |
 | Mówca odchodzi od tekstu (improvizuje) | alignment gubi | tryb manual po N sekund bez progresu; `[unk]` łagodzi |
 | Bateria (ASR 24/7) | długi speech = rozładowanie | model small (lekki), pauza po bezczynności, tryb manual bez ASR |
 | Jedyne PL model = 1 wybór | sufit jakości | fallback: whisper.cpp `small` jako alternatywny backend (inna ścieżka, M4+) |

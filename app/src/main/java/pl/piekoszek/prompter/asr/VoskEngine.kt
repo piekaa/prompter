@@ -20,10 +20,8 @@ import java.util.concurrent.Executors
  *    (main-looper Handler), so [Listener] methods are safe to use from UI.
  *  - [SpeechService.stop] **blocks** (interrupts + joins the recognizer
  *    thread) — it runs on a dedicated IO executor here.
- *  - [Recognizer.setGrammar] (live vocabulary switch, PROJEKT 3.2/8) also
- *    goes through the IO executor, so it never races the audio loop in-place.
  *
- * Engine operations (start/stop/setGrammar) are dispatched on a single IO
+ * Engine operations (start/stop/reset) are dispatched on a single IO
  * thread, which also orders them; state flags are [Volatile].
  */
 class VoskEngine(context: Context) {
@@ -88,7 +86,8 @@ class VoskEngine(context: Context) {
 
     /**
      * Starts recognition. `grammarJson` (null = full vocabulary) applies to
-     * the fresh recognizer; later vocabulary switches use [setGrammar].
+     * the fresh recognizer and is re-applied on every start, so the grammar
+     * of the current script wins even when the recognizer is reused.
      * Callbacks fire on the main thread.
      */
     fun start(
@@ -133,18 +132,6 @@ class VoskEngine(context: Context) {
                 onReady = { model?.let(::startWithModel) ?: main.post { onError("Model not ready") } },
                 onError = { err -> main.post { onError(err) } },
             )
-        }
-    }
-
-    /** Reconfigures the vocabulary live (PROJEKT 3.2). No-op when not running. */
-    fun setGrammar(grammarJson: String) {
-        val rec = recognizer ?: return
-        io.execute {
-            try {
-                rec.setGrammar(grammarJson)
-            } catch (t: Throwable) {
-                main.post { listener?.onError("setGrammar failed: ${t.message}") }
-            }
         }
     }
 

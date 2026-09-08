@@ -75,8 +75,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
     private var alignment = buildAlignmentEngine()
     /** Target words of the current session (normalized). */
     private var currentWords: List<String> = emptyList()
-    /** Center of the grammar window currently loaded into the recognizer. */
-    private var grammarCenter = 0
     /** Transcript buffer for live transcript display. */
     private val buf = TranscriptBuf()
 
@@ -149,12 +147,11 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         currentWords = words
-        grammarCenter = 0
         buf.reset()
         alignment = buildAlignmentEngine()
         alignment.setTarget(words)
         update { it.copy(session = SessionState(status = AsrStatus.STARTING)) }
-        val grammar = GrammarBuilder.toJson(GrammarBuilder.window(words, 0))
+        val grammar = GrammarBuilder.toJson(GrammarBuilder.full(words))
         engine.start(
             grammarJson = grammar,
             listener = engineListener,
@@ -198,8 +195,8 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Re-anchor to a user-scrolled position (PROJEKT 5.4): commit
      * [wordIndex] as the position, clear the alignment transcript, flush the
-     * recognizer partial, refresh the grammar window. Auto-follow is NOT
-     * switched off — the next committed word scrolls the text from here.
+     * recognizer partial. Auto-follow is NOT switched off — the next
+     * committed word scrolls the text from here.
      */
     fun manualJump(wordIndex: Int) {
         val words = currentWords
@@ -208,7 +205,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         alignment.resetTo(pos)
         buf.reset()
         engine.reset()
-        updateGrammarWindow(pos)
         update { it.copy(session = it.session.copy(
             position = pos,
             previewPosition = pos,
@@ -302,16 +298,6 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
             update { it.copy(session = it.session.copy(
                 status = AsrStatus.ERROR, statusMessage = message,
             )) }
-        }
-    }
-
-    /** Swaps the recognizer vocabulary for the window around [pos] (PROJEKT 8). */
-    private fun updateGrammarWindow(pos: Int) {
-        val words = currentWords
-        if (words.isEmpty()) return
-        if (kotlin.math.abs(pos - grammarCenter) > GrammarBuilder.DEFAULT_RADIUS / 2) {
-            grammarCenter = pos
-            engine.setGrammar(GrammarBuilder.toJson(GrammarBuilder.window(words, pos)))
         }
     }
 
