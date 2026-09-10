@@ -1,5 +1,6 @@
 package pl.piekoszek.prompter.ui
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,6 +53,7 @@ import kotlin.math.roundToInt
 import pl.piekoszek.prompter.AsrStatus
 import pl.piekoszek.prompter.PrompterViewModel
 import pl.piekoszek.prompter.core.Normalizer
+import kotlin.math.log
 
 private const val WORDS_PER_LINE = 10
 
@@ -216,59 +218,75 @@ fun PrompterScreen(
         var lastFrameNanos: Long? = null
         var lastPublish = 0L
         var lastText = ""
-        while (true) {
-            var now = 0L
-            withFrameNanos { now = it }
-            val prev = lastFrameNanos
-            lastFrameNanos = now
+        try {
+            while (true) {
+                var now = 0L
+                withFrameNanos { now = it }
+                val prev = lastFrameNanos
+                lastFrameNanos = now
 
-            // Decide this frame: scroll, or the exact reason not to.
-            var delta = 0f
-            var offReason: String? = null
-            if (prev != null) {
-                when {
-                    touching -> offReason = "paused: finger down (touching)"
-                    else -> {
-                        val pct = lastWordDebugState.value?.percent
-                        when {
-                            pct == null -> offReason = "paused: no read word on screen (highlight 0 or offscreen)"
-                            else -> {
-                                val t = ((pct - SCROLL_STOP_PCT) /
-                                    (SCROLL_FULL_PCT - SCROLL_STOP_PCT)).coerceIn(0f, 1f)
-                                if (t <= 0f) {
-                                    offReason = "paused: word at ${pct.roundToInt()}% (stop line ${SCROLL_STOP_PCT.toInt()}%)"
-                                } else {
-                                    val vpH = lazyState.layoutInfo.viewportSize.height
-                                    if (vpH > 0) {
-                                        // Live read: setting changes apply mid-scroll.
-                                        val dtSec = ((now - prev) / 1_000_000_000f).coerceAtMost(0.1f)
-                                        delta = state.settings.maxScrollSpeed * vpH.toFloat() * t * dtSec
-                                        lazyState.scroll { scrollBy(delta) }
+                // Decide this frame: scroll, or the exact reason not to.
+                var delta = 0f
+                var offReason: String? = null
+                if (prev != null) {
+                    when {
+                        touching -> offReason = "paused: finger down (touching)"
+                        else -> {
+                            val pct = lastWordDebugState.value?.percent
+                            when {
+                                pct == null -> offReason = "paused: no read word on screen (highlight 0 or offscreen)"
+                                else -> {
+                                    val t = ((pct - SCROLL_STOP_PCT) /
+                                        (SCROLL_FULL_PCT - SCROLL_STOP_PCT)).coerceIn(0f, 1f)
+                                    if (t <= 0f) {
+                                        offReason = "paused: word at ${pct.roundToInt()}% (stop line ${SCROLL_STOP_PCT.toInt()}%)"
                                     } else {
-                                        offReason = "paused: viewport height 0"
+                                        val vpH = lazyState.layoutInfo.viewportSize.height
+                                        if (vpH > 0) {
+                                            // Live read: setting changes apply mid-scroll.
+                                            val dtSec = ((now - prev) / 1_000_000_000f).coerceAtMost(0.1f)
+                                            delta = state.settings.maxScrollSpeed * vpH.toFloat() * t * dtSec
+                                            try {
+                                                lazyState.scroll { scrollBy(delta) }
+                                            } catch (e: java.util.concurrent.CancellationException) {
+                                                // A higher-priority scroll mutation (user drag,
+                                                // or a fling still settling) won this frame.
+                                                // This is the JDK CancellationException, NOT the
+                                                // coroutine one — safe to swallow: skip the frame,
+                                                // retry next. Letting it propagate would kill the
+                                                // whole loop (the original "loop dies" bug).
+                                                offReason = "skipped: gesture has higher scroll priority"
+                                            }
+                                        } else {
+                                            offReason = "paused: viewport height 0"
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Publish the on-screen debug (~5 Hz, change-gated). The counter
-            // is a heartbeat: if it stops ticking the loop itself is dead.
-            if (now - lastPublish >= 200_000_000L) {
-                lastPublish = now
-                val heartbeat = (now / 200_000_000L) % 1000
-                val text = if (offReason == null) {
-                    "scroll ON  Δ=${String.format(java.util.Locale.US, "%.1f", delta)}px/f  #$heartbeat"
-                } else {
-                    "scroll OFF  $offReason  #$heartbeat"
-                }
-                if (text != lastText) {
-                    lastText = text
-                    scrollDebug = text
+                // Publish the on-screen debug (~5 Hz, change-gated). The counter
+                // is a heartbeat: if it stops ticking the loop itself is dead.
+                if (now - lastPublish >= 200_000_000L) {
+                    lastPublish = now
+                    val heartbeat = (now / 200_000_000L) % 1000
+                    val text = if (offReason == null) {
+                        "scroll ON  Δ=${String.format(java.util.Locale.US, "%.1f", delta)}px/f  #$heartbeat"
+                    } else {
+                        "scroll OFF  $offReason  #$heartbeat"
+                    }
+                    if (text != lastText) {
+                        lastText = text
+                        scrollDebug = text
+                    }
                 }
             }
+        } catch (e: Exception) {
+            Log.e("PROMPTER", "LOOP EXCEPTION ${e::class.java.name}", e)
+        } finally {
+            Log.d("PROMPTER", "LOOP CANCELLED — composition gone")
         }
     }
 
@@ -325,6 +343,7 @@ fun PrompterScreen(
                             try {
                                 while (true) {
                                     val event = awaitPointerEvent()
+
                                     when (event.type) {
                                         PointerEventType.Press -> {
                                             touching = true
