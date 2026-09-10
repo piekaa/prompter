@@ -154,6 +154,10 @@ fun PrompterScreen(
     val lineMinHeight = remember(fontSizeSp) { (fontSizeSp * 1.8f).dp }
     var viewportPx by remember { mutableIntStateOf(0) }
     var touching by remember { mutableStateOf(false) }
+    // On-screen debug (top-right overlay): auto-scroll status. Written by the
+    // scroll loop below (throttled to ~5 Hz + change-gated so it doesn't
+    // force a recomposition every frame).
+    var scrollDebug by remember { mutableStateOf("scroll: starting…") }
     val lazyState = rememberLazyListState()
 
     /**
@@ -210,24 +214,59 @@ fun PrompterScreen(
     // (e.g. app resume) never teleports the list.
     LaunchedEffect(lazyState, words) {
         var lastFrameNanos: Long? = null
+        var lastPublish = 0L
+        var lastText = ""
         while (true) {
             var now = 0L
             withFrameNanos { now = it }
             val prev = lastFrameNanos
             lastFrameNanos = now
-            if (prev != null && !touching) {
-                val dtSec = ((now - prev) / 1_000_000_000f).coerceAtMost(0.1f)
-                val pct = lastWordDebugState.value?.percent
-                if (pct != null) {
-                    val t = ((pct - SCROLL_STOP_PCT) / (SCROLL_FULL_PCT - SCROLL_STOP_PCT)).coerceIn(0f, 1f)
-                    if (t > 0f) {
-                        val vpH = lazyState.layoutInfo.viewportSize.height
-                        if (vpH > 0) {
-                            // Live read: setting changes apply mid-scroll.
-                            val delta = state.settings.maxScrollSpeed * vpH.toFloat() * t * dtSec
-                            lazyState.scroll { scrollBy(delta) }
+
+            // Decide this frame: scroll, or the exact reason not to.
+            var delta = 0f
+            var offReason: String? = null
+            if (prev != null) {
+                when {
+                    touching -> offReason = "paused: finger down (touching)"
+                    else -> {
+                        val pct = lastWordDebugState.value?.percent
+                        when {
+                            pct == null -> offReason = "paused: no read word on screen (highlight 0 or offscreen)"
+                            else -> {
+                                val t = ((pct - SCROLL_STOP_PCT) /
+                                    (SCROLL_FULL_PCT - SCROLL_STOP_PCT)).coerceIn(0f, 1f)
+                                if (t <= 0f) {
+                                    offReason = "paused: word at ${pct.roundToInt()}% (stop line ${SCROLL_STOP_PCT.toInt()}%)"
+                                } else {
+                                    val vpH = lazyState.layoutInfo.viewportSize.height
+                                    if (vpH > 0) {
+                                        // Live read: setting changes apply mid-scroll.
+                                        val dtSec = ((now - prev) / 1_000_000_000f).coerceAtMost(0.1f)
+                                        delta = state.settings.maxScrollSpeed * vpH.toFloat() * t * dtSec
+                                        lazyState.scroll { scrollBy(delta) }
+                                    } else {
+                                        offReason = "paused: viewport height 0"
+                                    }
+                                }
+                            }
                         }
                     }
+                }
+            }
+
+            // Publish the on-screen debug (~5 Hz, change-gated). The counter
+            // is a heartbeat: if it stops ticking the loop itself is dead.
+            if (now - lastPublish >= 200_000_000L) {
+                lastPublish = now
+                val heartbeat = (now / 200_000_000L) % 1000
+                val text = if (offReason == null) {
+                    "scroll ON  Δ=${String.format(java.util.Locale.US, "%.1f", delta)}px/f  #$heartbeat"
+                } else {
+                    "scroll OFF  $offReason  #$heartbeat"
+                }
+                if (text != lastText) {
+                    lastText = text
+                    scrollDebug = text
                 }
             }
         }
@@ -268,28 +307,32 @@ fun PrompterScreen(
                         // left it and the next word spoken scrolls again.
                         // A bare tap commits nothing.
                         //
-                        // Cancellation-safe (ui-android 1.10.x): a gesture
-                        // cancelled by the system (notification shade, app
-                        // switch, finger slipping off the sensor) may never
-                        // deliver a Release — in this API that arrives as
-                        // coroutine cancellation of the await loop. `touching`
-                        // is therefore cleared on every Release, restarted on
-                        // every Press (a new gesture means the previous one is
-                        // over, whatever happened to it), and in `finally` if
-                        // this coroutine is cancelled — so auto-scroll can
-                        // never be stuck off. Cancels never commit a jump.
+                        // A gesture cancelled by the system (edge/back swipe,
+                        // a notification stealing the touch, finger slipping
+                        // off the sensor) delivers NEITHER a Release NOR a
+                        // coroutine cancel: it resumes the loop with a
+                        // synthetic non-Release event (see
+                        // SuspendingPointerInputFilter.onCancelPointerInput —
+                        // it dispatches a cancel event with the change
+                        // unpressed). Any non-Press/non-Move/non-Release
+                        // event therefore ends the gesture: clear the pause,
+                        // never commit. (Older code swallowed those in
+                        // `else -> Unit`, leaving `touching` true forever —
+                        // auto-scroll dead until the next release.)
+                        // `finally` still covers disposal-time cancellation.
                         awaitPointerEventScope {
                             var start: Pair<Int, Int>? = null
                             try {
                                 while (true) {
                                     val event = awaitPointerEvent()
-                                    when {
-                                        event.type == PointerEventType.Press -> {
+                                    when (event.type) {
+                                        PointerEventType.Press -> {
                                             touching = true
                                             start = lazyState.firstVisibleItemIndex to
                                                 lazyState.firstVisibleItemScrollOffset
                                         }
-                                        event.type == PointerEventType.Release -> {
+                                        PointerEventType.Move -> Unit
+                                        PointerEventType.Release -> {
                                             if (touching) {
                                                 touching = false
                                                 val s = start
@@ -303,7 +346,13 @@ fun PrompterScreen(
                                                 }
                                             }
                                         }
-                                        else -> Unit // Move / Enter / Exit / Scroll
+                                        else -> {
+                                            // Gesture cancel (synthetic event) or
+                                            // other non-drag terminations: end
+                                            // the pause, never commit a jump.
+                                            touching = false
+                                            start = null
+                                        }
                                     }
                                 }
                             } finally {
@@ -402,16 +451,36 @@ fun PrompterScreen(
         }
 
         // Debug overlay (top-right): last read word + its position in % of
-        // screen height (0% top … 100% bottom).
-        lastWordDebug?.let { (word, percent) ->
-            val pct = percent?.roundToInt()
+        // screen height (0% top … 100% bottom), plus live auto-scroll status
+        // (ON with per-frame delta, or OFF with the exact reason: finger
+        // down / no read word / above the stop line / zero viewport).
+        Column(
+            horizontalAlignment = Alignment.End,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp),
+        ) {
+            lastWordDebug?.let { (word, percent) ->
+                val pct = percent?.roundToInt()
+                Text(
+                    text = "dbg: «$word» ${if (pct != null) "$pct%" else "offscreen"}",
+                    color = Color(0xFFFFE082),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier
+                        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
             Text(
-                text = "dbg: «$word» ${if (pct != null) "$pct%" else "offscreen"}",
-                color = Color(0xFFFFE082),
+                text = scrollDebug,
+                color = if (scrollDebug.startsWith("scroll ON")) {
+                    Color(0xFFB9F6CA) // greenish = running
+                } else {
+                    Color(0xFFFFE082) // amber = stopped, see reason
+                },
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp)
+                    .padding(top = 4.dp)
                     .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
