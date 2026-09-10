@@ -3,6 +3,7 @@ package pl.piekoszek.prompter
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -77,6 +78,14 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
     private var currentWords: List<String> = emptyList()
     /** Transcript buffer for live transcript display. */
     private val buf = TranscriptBuf()
+    /**
+     * Partials arriving before this monotonic time (elapsedRealtime) are
+     * in-flight leftovers computed before the last jump/start reset — they
+     * carry pre-reset words and would re-commit the old position (see
+     * [STALE_PARTIAL_DROP_MS]). All callbacks run on the main thread, so no
+     * synchronization is needed.
+     */
+    private var dropPartialsUntil = 0L
 
     init {
         // Kick off the one-time model unpack early (idempotent); scripts are
@@ -150,6 +159,10 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         buf.reset()
         alignment = buildAlignmentEngine()
         alignment.setTarget(words)
+        // A partial from the previous session may still be queued on the main
+        // looper; if it lands after this start it would re-commit the old
+        // position into the fresh engine. Same guard as in [manualJump].
+        dropPartialsUntil = SystemClock.elapsedRealtime() + STALE_PARTIAL_DROP_MS
         update { it.copy(session = SessionState(status = AsrStatus.STARTING)) }
         val grammar = GrammarBuilder.toJson(GrammarBuilder.full(words))
         engine.start(
@@ -205,11 +218,16 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         alignment.resetTo(pos)
         buf.reset()
         engine.reset()
+        // The recognizer thread may still deliver the pre-jump partial
+        // (computed before the reset took effect). Drop it — see
+        // [STALE_PARTIAL_DROP_MS] / [dropPartialsUntil].
+        dropPartialsUntil = SystemClock.elapsedRealtime() + STALE_PARTIAL_DROP_MS
         update { it.copy(session = it.session.copy(
             position = pos,
             previewPosition = pos,
             progress = alignment.progress,
             highlight = 0,
+            liveTranscript = "",
         )) }
     }
 
@@ -260,6 +278,14 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
 
     private val engineListener = object : VoskEngine.Listener {
         override fun onPartial(text: String) {
+            // Drop in-flight partials computed before the last jump/start
+            // reset: they hold the words spoken at the OLD position, and the
+            // strong catch-up rule would re-commit that position, leaving the
+            // engine stuck ahead of the reader (monotonic — it can never move
+            // back). The window is short (STALE_PARTIAL_DROP_MS) and the
+            // cumulative partial re-delivers the words spoken after the jump,
+            // so nothing real is lost.
+            if (SystemClock.elapsedRealtime() < dropPartialsUntil) return
             // Partial contains all words spoken so far (live, may still change).
             // We use this directly for alignment - no separate "final" handling.
             val words = text.trim().split(WHITESPACE).filter { it.isNotEmpty() }
@@ -392,6 +418,17 @@ class PrompterViewModel(app: Application) : AndroidViewModel(app) {
         const val MIN_SCROLL_SPEED = 0.1f
         const val MAX_SCROLL_SPEED = 1f
         const val DEFAULT_SCROLL_SPEED = 0.3f
+        /**
+         * After a jump (or session start), partials arriving within this
+         * window are dropped as pre-reset leftovers. The recognizer delivers
+         * a partial every loop iteration (~200 ms of audio) and applies
+         * `reset()` at its next iteration, so the last stale partial can
+         * arrive at most ~one iteration + main-queue latency after the jump;
+         * 800 ms is ~3x that bound. Fresh partials are cumulative, so dropping
+         * the first one or two of the new utterance loses nothing — the next
+         * delivery already contains those words.
+         */
+        const val STALE_PARTIAL_DROP_MS = 800L
         private const val SETTINGS_FILE = "settings.json"
         /** WHITESPACE regex for splitting text into words. */
         private val WHITESPACE = Regex("\\s+")

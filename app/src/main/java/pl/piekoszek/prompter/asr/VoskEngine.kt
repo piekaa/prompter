@@ -21,8 +21,10 @@ import java.util.concurrent.Executors
  *  - [SpeechService.stop] **blocks** (interrupts + joins the recognizer
  *    thread) — it runs on a dedicated IO executor here.
  *
- * Engine operations (start/stop/reset) are dispatched on a single IO
- * thread, which also orders them; state flags are [Volatile].
+ * Engine operations (start/stop) are dispatched on a single IO thread,
+ * which also orders them; state flags are [Volatile]. [reset] is the
+ * exception: it only sets a volatile flag on the recognizer thread, so it
+ * runs synchronously on the caller's thread (see [reset]).
  */
 class VoskEngine(context: Context) {
 
@@ -142,11 +144,21 @@ class VoskEngine(context: Context) {
         svc.setPause(pause)
     }
 
-    /** Discards the in-flight partial utterance (e.g. after a manual jump). */
+    /**
+     * Discards the in-flight partial utterance (e.g. after a manual jump).
+     *
+     * Synchronous on purpose: `SpeechService.reset()` is null-guarded and
+     * only sets a volatile flag that the recognizer thread checks at its
+     * next loop iteration (~200 ms of audio later) — it blocks nothing, so
+     * there is no work to serialize on the IO executor. Running it on the
+     * caller's thread makes the reset take effect immediately, which tightens
+     * the bound on how late a pre-reset partial can still be delivered
+     * (at most one recognizer iteration + main-queue latency). Callers that
+     * must not accept pre-reset words should still guard a short window
+     * (see `PrompterViewModel.STALE_PARTIAL_DROP_MS`).
+     */
     fun reset() {
-        io.execute {
-            speech?.reset()
-        }
+        speech?.reset()
     }
 
     /**

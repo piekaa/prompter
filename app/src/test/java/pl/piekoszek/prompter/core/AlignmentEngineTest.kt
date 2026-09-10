@@ -271,6 +271,45 @@ class AlignmentEngineTest {
     }
 
     /**
+     * Hazard that the ViewModel must guard against (user report: after
+     * scrolling up to re-read, the underline followed but the text stopped
+     * scrolling). The recognizer delivers in-flight partials asynchronously:
+     * a partial computed BEFORE a manual jump (resetTo) can still be posted
+     * to the main thread AFTER it. It contains the words spoken at the old,
+     * further position — and the strong catch-up rule reads that stale
+     * evidence as "speaker is ahead", re-committing the old position.
+     * Because position is monotonic, the engine then sits forever AHEAD of
+     * the reader: everything the reader re-reads is already highlighted
+     * (underline "works"), but the engine never advances with the reader
+     * (auto-scroll, which tracks the committed position, never fires).
+     *
+     * PrompterViewModel therefore drops partials arriving shortly after a
+     * jump (STALE_PARTIAL_DROP_MS) — the cumulative partial re-delivers the
+     * words the reader speaks next, so nothing is lost.
+     */
+    @Test
+    fun `stale in-flight partial after jump re-commits old position`() {
+        val engine = AlignmentEngine()
+        engine.setTarget(target)
+        // Speaker was reading at position 20; the in-flight partial holds
+        // the last 6 words they spoke (target[14..19]).
+        engine.updateForPartial(target.subList(14, 20).map { TranscriptWord(it) })
+        assertEquals(20L, engine.position().toLong())
+        // Manual jump back to word 5 (user scrolled up to re-read).
+        engine.resetTo(5)
+        assertEquals(5L, engine.position().toLong())
+        // The stale partial — computed before the jump, delivered after it —
+        // arrives. Its 6 exact words are "strong" evidence within the
+        // 80-word search radius, so the old position re-commits…
+        engine.updateForPartial(target.subList(14, 20).map { TranscriptWord(it) })
+        assertEquals(20L, engine.position().toLong())
+        // …and the reader, now behind the position, can never move it again:
+        // their words (target[5..9]) match nothing in the forward scan.
+        engine.updateForPartial(target.subList(5, 10).map { TranscriptWord(it) })
+        assertEquals("engine stuck ahead of the reader", 20L, engine.position().toLong())
+    }
+
+    /**
      * Contrast guard: a strong match far ahead commits, but a weak match far
      * ahead (only 2 words) must not — even though both are the same distance
      * from the current position. This is the line between legitimate catch-up
